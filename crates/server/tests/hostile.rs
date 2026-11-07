@@ -3,43 +3,14 @@
 //!
 //! Memory cases only run on Linux: macOS does not enforce `RLIMIT_AS`.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::OnceLock;
+mod common;
+
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use common::{worker_bin, workspace};
 use pdfq_protocol::{ErrorKind, File, Job, JobOptions, JobSource};
 use pdfq_server::pool::{Pool, PoolConfig};
-
-fn workspace() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-/// Builds `pdfq-worker` once (or uses `PDFQ_WORKER_BIN`).
-fn worker_bin() -> PathBuf {
-    static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| {
-        if let Some(bin) = std::env::var_os("PDFQ_WORKER_BIN") {
-            return bin.into();
-        }
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .args(["build", "-q", "-p", "pdfq-worker"])
-            .current_dir(workspace())
-            .status()
-            .expect("failed to run cargo");
-        assert!(status.success(), "building pdfq-worker failed");
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| workspace().join("target"));
-        target.join("debug/pdfq-worker")
-    })
-    .clone()
-}
 
 fn config() -> PoolConfig {
     PoolConfig {
@@ -49,6 +20,7 @@ fn config() -> PoolConfig {
         jobs_per_worker: 50,
         queue_size: 8,
         wall_timeout: Duration::from_secs(10),
+        queue_timeout: Duration::from_secs(30),
         cpu_timeout: Duration::from_secs(3),
         memory_limit: 256 << 20,
         max_output_size: 100 << 20,
@@ -315,6 +287,23 @@ async fn full_queue_is_refused() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let _queued = pool.submit(sane()).unwrap();
     let err = pool.submit(sane()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::QueueFull);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jobs_waiting_too_long_are_not_run() {
+    let pool = Pool::start(PoolConfig {
+        workers: 1,
+        wall_timeout: Duration::from_secs(3),
+        queue_timeout: Duration::from_secs(1),
+        ..config()
+    });
+    // Wait for the worker: its startup must not count against the queue timeout.
+    while pool.stats().ready_workers.load(Ordering::Relaxed) == 0 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _running = pool.submit(hostile("infinite-loop")).unwrap();
+    let err = pool.compile(sane()).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::QueueFull);
 }
 

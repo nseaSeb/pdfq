@@ -45,6 +45,8 @@ Body: `multipart/form-data`, or `application/json` for template mode without upl
 | `strict` | `false` | Any Typst warning (e.g. unknown font) fails the job |
 | `callback_url` | — | `/jobs` only, see *Webhook* |
 
+Paths of uploaded files come from the part's filename. With curl: `-F 'file=@logo.png;filename=img/logo.png'`.
+
 Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", default: "{}")))`.
 
 ## Responses
@@ -117,8 +119,9 @@ Every limit has a default and can be overridden with an environment variable (or
 | `PDFQ_MAX_OUTPUT_SIZE` | `100MiB` | Generated PDF |
 | `PDFQ_WALL_TIMEOUT` | `30s` | Wall-clock compilation time per job |
 | `PDFQ_CPU_TIMEOUT` | `20s` | CPU time per job |
+| `PDFQ_QUEUE_TIMEOUT` | `30s` | Time a job may wait for a free worker; older jobs fail with `queue_full` without running |
 | `PDFQ_MEMORY_LIMIT` | `512MiB` | Memory per job, above the worker baseline |
-| `PDFQ_QUEUE_SIZE` | `64` | Queued jobs before `429` |
+| `PDFQ_QUEUE_SIZE` | `64` | Queued jobs before `429`. At most `workers + queue size` requests are read at once; extra ones get `429` before their body is read |
 | `PDFQ_JOB_TTL` | `1h` | Async job retention after completion |
 
 Limits are server-wide in v1: a request cannot raise or lower them.

@@ -259,11 +259,7 @@ fn limit(value: u64) -> Option<u64> {
 }
 
 fn open_template(dir: Option<&Path>, name: &str) -> Result<Project, JobError> {
-    let valid = !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
-    if !valid {
+    if !pdfq_protocol::is_valid_template_name(name) {
         return Err(invalid(format!("invalid template name `{name}`")));
     }
     let not_found = || JobError::new(ErrorKind::NotFound, format!("template `{name}` not found"));

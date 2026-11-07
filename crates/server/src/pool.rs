@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pdfq_protocol::{
     EXIT_OOM, ErrorKind, Job, JobError, JobOutput, PROTOCOL_VERSION, WorkerMessage,
@@ -46,6 +46,8 @@ pub struct PoolConfig {
     pub queue_size: usize,
     /// Wall-clock limit per job.
     pub wall_timeout: Duration,
+    /// Longest wait in the queue: older jobs fail with `queue_full` without running.
+    pub queue_timeout: Duration,
     /// CPU time limit per job.
     pub cpu_timeout: Duration,
     /// Memory budget per job, above the worker's baseline.
@@ -64,6 +66,7 @@ impl Default for PoolConfig {
             jobs_per_worker: 100,
             queue_size: 64,
             wall_timeout: Duration::from_secs(30),
+            queue_timeout: Duration::from_secs(30),
             cpu_timeout: Duration::from_secs(20),
             memory_limit: 512 << 20,
             max_output_size: 100 << 20,
@@ -89,6 +92,7 @@ pub type JobResult = Result<JobOutput, JobError>;
 struct Task {
     job: Job,
     reply: oneshot::Sender<JobResult>,
+    enqueued: Instant,
 }
 
 /// Handle to the pool. Dropping it stops the workers once the queue drains.
@@ -132,12 +136,18 @@ impl Pool {
             job_max.min(pool_max)
         };
         let (reply, receiver) = oneshot::channel();
-        self.queue.try_send(Task { job, reply }).map_err(|_| {
-            JobError::new(
-                ErrorKind::QueueFull,
-                "the compilation queue is full, retry later",
-            )
-        })?;
+        self.queue
+            .try_send(Task {
+                job,
+                reply,
+                enqueued: Instant::now(),
+            })
+            .map_err(|_| {
+                JobError::new(
+                    ErrorKind::QueueFull,
+                    "the compilation queue is full, retry later",
+                )
+            })?;
         Ok(receiver)
     }
 
@@ -200,6 +210,13 @@ async fn run_slot(
         let Ok(task) = queue.recv().await else { break };
         if task.reply.is_closed() {
             continue; // The client went away while the job was queued.
+        }
+        if task.enqueued.elapsed() > config.queue_timeout {
+            let _ = task.reply.send(Err(JobError::new(
+                ErrorKind::QueueFull,
+                "timed out waiting for a worker, retry later",
+            )));
+            continue;
         }
 
         let w = worker.as_mut().expect("worker spawned above");

@@ -14,6 +14,40 @@ use serde::{Deserialize, Serialize};
 /// Bumped on any incompatible change to the messages below.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The exact Typst version PDFQ is built against (pinned in the root `Cargo.toml`).
+pub const TYPST_VERSION: &str = "0.15.1";
+
+/// Template names: 1 to 64 lowercase letters, digits, `-` and `_`.
+pub fn is_valid_template_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// Parses a byte size such as `10MiB`, `512KiB`, `1GiB` or `1048576`.
+pub fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (number, unit) = s.split_at(split);
+    let number: u64 = number.parse().map_err(|_| format!("invalid size `{s}`"))?;
+    let factor: u64 = match unit.trim() {
+        "" | "B" => 1,
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        _ => {
+            return Err(format!(
+                "invalid size unit in `{s}` (use B, KiB, MiB or GiB)"
+            ));
+        }
+    };
+    number
+        .checked_mul(factor)
+        .ok_or_else(|| format!("size `{s}` is too large"))
+}
+
 /// Exit code of a worker whose allocation failed (memory limit reached).
 pub const EXIT_OOM: i32 = 3;
 
@@ -301,6 +335,25 @@ mod tests {
         write_frame(&mut buf, &WorkerMessage::Failed(err.clone())).unwrap();
         let back: WorkerMessage = read_frame(&mut buf.as_slice(), 1024).unwrap().unwrap();
         assert!(matches!(back, WorkerMessage::Failed(e) if e == err));
+    }
+
+    #[test]
+    fn parses_sizes() {
+        assert_eq!(parse_size("1048576"), Ok(1 << 20));
+        assert_eq!(parse_size("10MiB"), Ok(10 << 20));
+        assert_eq!(parse_size("512 KiB"), Ok(512 << 10));
+        assert_eq!(parse_size("1GiB"), Ok(1 << 30));
+        for bad in ["", "MiB", "10MB", "-1", "99999999999999999999GiB"] {
+            assert!(parse_size(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn validates_template_names() {
+        assert!(is_valid_template_name("invoice_v2-fr"));
+        for bad in ["", "Invoice", "../x", "a/b", &"a".repeat(65)] {
+            assert!(!is_valid_template_name(bad), "{bad}");
+        }
     }
 
     #[test]

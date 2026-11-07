@@ -233,3 +233,13 @@ fn missing_entrypoint_is_rejected() {
     let p = project(&[("main.typ", "x")]);
     assert!(PdfqWorld::new(p, &FONTS, &Packages::default(), world).is_err());
 }
+
+#[test]
+fn typst_version_constant_matches_the_pin() {
+    let manifest = include_str!("../../../Cargo.toml");
+    let pin = format!("typst = \"={}\"", pdfq_core::TYPST_VERSION);
+    assert!(
+        manifest.contains(&pin),
+        "update TYPST_VERSION in pdfq-protocol"
+    );
+}

@@ -13,7 +13,7 @@ HTTP service that compiles Typst documents to PDF, sync or async (webhook). Stat
 | `crates/cli` (`pdfq-cli`) | done | `pdfq-cli compile in.typ -o out.pdf` — dev/debug, no isolation |
 | `crates/protocol` (`pdfq-protocol`) | done | `Job`/`WorkerMessage`/`JobError`/`Diagnostic`; frames = u32 LE length + postcard |
 | `crates/worker` (`pdfq-worker`) | done | One job at a time over stdin/stdout, per-job soft rlimits, OOM allocator (exit 3) |
-| `crates/server` (`pdfq-server`) | pool done, HTTP planned | `pool`: supervisor (spawn + hard rlimits, wall timeout + SIGKILL, classify death, recycle, bounded queue) |
+| `crates/server` (`pdfq-server`, binary `pdfq`) | sync API done | `pool`: worker supervisor; `config`: clap + `PDFQ_*`; `request`: multipart/JSON parsing; `validate`: paths, sizes, zip, image headers; `api`: `/compile`, `/health`, `/ready`; `error`: `JobError` to HTTP status |
 
 Security model: every compilation runs in a separate worker process. The supervisor sets hard rlimits in `pre_exec` (`crates/server/src/spawn.rs`); before each job the worker lowers its own soft `RLIMIT_AS` (current VmSize + budget) and `RLIMIT_CPU` (used + budget), because both are cumulative over the process life (`crates/worker/src/limits.rs`). Death is classified in `pool::classify`: exit 3 = `memory_limit`, SIGXCPU = `timeout`/cpu, our SIGKILL after the wall timeout = `timeout`/wall. The server never links Typst.
 
@@ -37,6 +37,9 @@ Hostile corpus: `tests/fixtures/hostile/`, exercised by `crates/server/tests/hos
 - Protocol: never use `skip_serializing_if` on protocol types; postcard is positional and skipped fields corrupt frames.
 
 ## Commands
+
+Run the server locally: `cargo build -p pdfq-server -p pdfq-worker && PDFQ_TEMPLATE_DIR=examples ./target/debug/pdfq` (the worker binary is looked up next to `pdfq`, or `PDFQ_WORKER_BIN`).
+
 
 ```sh
 cargo fmt --all
