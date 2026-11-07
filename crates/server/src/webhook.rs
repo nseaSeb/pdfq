@@ -5,6 +5,7 @@
 use bytes::Bytes;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, KeyInit, Mac};
@@ -56,6 +57,8 @@ pub const MAX_URL_LEN: usize = 2048;
 pub struct Webhooks {
     config: Arc<WebhookConfig>,
     client: Client,
+    /// Settled deliveries: (delivered, failed).
+    counts: Arc<(AtomicU64, AtomicU64)>,
 }
 
 impl Webhooks {
@@ -75,6 +78,7 @@ impl Webhooks {
         Self {
             config: Arc::new(config),
             client,
+            counts: Default::default(),
         }
     }
 
@@ -108,8 +112,28 @@ impl Webhooks {
         Ok(url)
     }
 
-    /// Delivers with retries. Never fails: the outcome is reported.
+    /// Settled deliveries: (delivered, failed).
+    pub fn counts(&self) -> (u64, u64) {
+        (
+            self.counts.0.load(Ordering::Relaxed),
+            self.counts.1.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Delivers with retries and counts the outcome.
     pub async fn deliver(&self, url: Url, delivery: Delivery) -> Report {
+        let report = self.deliver_inner(url, delivery).await;
+        let counter = if report.delivered {
+            &self.counts.0
+        } else {
+            &self.counts.1
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        report
+    }
+
+    /// Delivers with retries. Never fails: the outcome is reported.
+    async fn deliver_inner(&self, url: Url, delivery: Delivery) -> Report {
         let Some(secret) = self.config.secret.as_deref() else {
             return Report {
                 delivered: false,

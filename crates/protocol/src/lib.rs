@@ -300,6 +300,46 @@ pub enum ErrorKind {
     Internal,
 }
 
+impl ErrorKind {
+    /// Every kind, in declaration order (`kind as usize` indexes it).
+    pub const ALL: [ErrorKind; 14] = [
+        Self::InvalidInput,
+        Self::SchemaViolation,
+        Self::NotFound,
+        Self::PayloadTooLarge,
+        Self::CompileError,
+        Self::PackageNotAllowed,
+        Self::TooManyPages,
+        Self::OutputTooLarge,
+        Self::Timeout,
+        Self::MemoryLimit,
+        Self::QueueFull,
+        Self::WorkerCrashed,
+        Self::NotFinished,
+        Self::Internal,
+    ];
+
+    /// The serialized (snake_case) name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid_input",
+            Self::SchemaViolation => "schema_violation",
+            Self::NotFound => "not_found",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::CompileError => "compile_error",
+            Self::PackageNotAllowed => "package_not_allowed",
+            Self::TooManyPages => "too_many_pages",
+            Self::OutputTooLarge => "output_too_large",
+            Self::Timeout => "timeout",
+            Self::MemoryLimit => "memory_limit",
+            Self::QueueFull => "queue_full",
+            Self::WorkerCrashed => "worker_crashed",
+            Self::NotFinished => "not_finished",
+            Self::Internal => "internal",
+        }
+    }
+}
+
 /// A Typst diagnostic resolved to a file, line and column (1-based).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
@@ -445,6 +485,38 @@ mod tests {
         assert!(
             matches!(back.source, JobSource::Files { ref files, .. } if files[0].data == b"Hello")
         );
+    }
+
+    #[test]
+    fn all_lists_every_error_kind_in_order() {
+        // Adding a variant breaks this match until it is handled here and in ALL.
+        let listed = |k: ErrorKind| match k {
+            ErrorKind::InvalidInput
+            | ErrorKind::SchemaViolation
+            | ErrorKind::NotFound
+            | ErrorKind::PayloadTooLarge
+            | ErrorKind::CompileError
+            | ErrorKind::PackageNotAllowed
+            | ErrorKind::TooManyPages
+            | ErrorKind::OutputTooLarge
+            | ErrorKind::Timeout
+            | ErrorKind::MemoryLimit
+            | ErrorKind::QueueFull
+            | ErrorKind::WorkerCrashed
+            | ErrorKind::NotFinished
+            | ErrorKind::Internal => ErrorKind::ALL.get(k as usize) == Some(&k),
+        };
+        assert!(ErrorKind::ALL.iter().all(|k| listed(*k)));
+        assert!(listed(ErrorKind::Internal), "the last variant closes ALL");
+        assert_eq!(ErrorKind::ALL.len(), ErrorKind::Internal as usize + 1);
+    }
+
+    #[test]
+    fn error_kind_names_match_serde() {
+        for kind in ErrorKind::ALL {
+            let json = serde_json::to_value(kind).unwrap();
+            assert_eq!(json, kind.as_str());
+        }
     }
 
     #[test]

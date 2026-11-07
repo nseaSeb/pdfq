@@ -1,6 +1,7 @@
 //! HTTP routes.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -31,15 +32,17 @@ pub struct AppState {
     pub schemas: Arc<SchemaCache>,
     pub jobs: Arc<JobStore>,
     pub webhooks: Webhooks,
+    /// Requests refused by [`AppState::admit`].
+    pub rejected: Arc<AtomicU64>,
 }
 
 impl AppState {
     /// Admits a request or fails with `queue_full` without reading its body.
     pub fn admit(&self) -> Result<OwnedSemaphorePermit, ApiError> {
-        self.admission
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| ApiError::new(ErrorKind::QueueFull, "the server is busy, retry later"))
+        self.admission.clone().try_acquire_owned().map_err(|_| {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+            ApiError::new(ErrorKind::QueueFull, "the server is busy, retry later")
+        })
     }
 }
 
@@ -54,6 +57,7 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs", post(create_job))
         .route("/jobs/{id}", get(job_status))
         .route("/jobs/{id}/pdf", get(job_pdf))
+        .route("/metrics", get(metrics))
         .route("/health", get(health))
         .route("/ready", get(ready))
         .layer(DefaultBodyLimit::max(body_limit))
@@ -256,12 +260,38 @@ async fn job_pdf(
     }
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({
-        "status": "ok",
+/// Never goes through admission: scraping works while the server is saturated.
+async fn metrics(State(state): State<AppState>) -> Response {
+    let (delivered, failed) = state.webhooks.counts();
+    let body = crate::metrics::render(
+        state.pool.stats(),
+        &crate::metrics::Extra {
+            queued: state.pool.queue_len() as u64,
+            admission_rejected: state.rejected.load(Ordering::Relaxed),
+            async_jobs: state.jobs.len() as u64,
+            webhooks_delivered: delivered,
+            webhooks_failed: failed,
+        },
+    );
+    ([(header::CONTENT_TYPE, crate::metrics::CONTENT_TYPE)], body).into_response()
+}
+
+/// Liveness: 503 while no worker process is alive (startup, or workers that
+/// cannot start). Busy workers count as alive: a full queue is not unhealthy.
+async fn health(State(state): State<AppState>) -> Response {
+    let workers = state.pool.stats().ready_workers.load(Ordering::Relaxed);
+    let (status, text) = if workers > 0 {
+        (StatusCode::OK, "ok")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "no_worker")
+    };
+    let body = json!({
+        "status": text,
+        "workers": workers,
         "version": env!("CARGO_PKG_VERSION"),
         "typst_version": TYPST_VERSION,
-    }))
+    });
+    (status, Json(body)).into_response()
 }
 
 async fn ready(State(state): State<AppState>) -> Response {

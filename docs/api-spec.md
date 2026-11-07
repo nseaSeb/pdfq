@@ -1,7 +1,7 @@
 # PDFQ HTTP API — v1 specification (draft)
 
 PDFQ compiles Typst documents to PDF. It is stateless: async jobs live in memory and are lost on restart.
-Compatibility is tied to the Typst version: images are tagged `pdfq:<version>-typst<typst-version>` (e.g. `pdfq:0.1.0-typst0.15.1`), and `/health` reports both.
+Compatibility is tied to the Typst version: tag built images `pdfq:<version>-typst<typst-version>` (e.g. `pdfq:0.1.0-typst0.15.1`); `/health` reports both. No image is published yet: build it from the `Dockerfile`.
 
 ## Endpoints
 
@@ -11,7 +11,7 @@ Compatibility is tied to the Typst version: images are tagged `pdfq:<version>-ty
 | `POST` | `/jobs` | Queue a compilation, respond `202` |
 | `GET` | `/jobs/{id}` | Job status (JSON) |
 | `GET` | `/jobs/{id}/pdf` | Job result |
-| `GET` | `/health` | Liveness + versions |
+| `GET` | `/health` | Liveness + versions: `503` while no worker process is alive |
 | `GET` | `/ready` | At least one worker ready and queue not full |
 | `GET` | `/metrics` | Prometheus metrics |
 
@@ -114,6 +114,27 @@ Anti-SSRF: HTTPS only, no credentials in the URL, no redirects, no proxy. Privat
 | `PDFQ_WEBHOOK_RETRIES` | `3` | Retries after the first attempt |
 | `PDFQ_WEBHOOK_RETRY_DELAY` | `1s` | First retry delay |
 
+## Metrics
+
+`GET /metrics` (Prometheus text format, never refused for capacity):
+
+| Metric | Type | Labels |
+|---|---|---|
+| `pdfq_info` | gauge | `version`, `typst_version` |
+| `pdfq_jobs_total` | counter | `outcome`: `succeeded` or an error `kind` |
+| `pdfq_job_duration_seconds` | histogram | time in a worker |
+| `pdfq_workers` | gauge | `state`: `ready`, `busy` |
+| `pdfq_queue_length` | gauge | |
+| `pdfq_worker_spawns_total` | counter | |
+| `pdfq_worker_exits_total` | counter | `reason`: `recycled`, `wall_timeout`, `cpu_limit`, `memory_limit`, `crashed` |
+| `pdfq_requests_rejected_total` | counter | refused before reading the body |
+| `pdfq_async_jobs` | gauge | jobs held in memory |
+| `pdfq_webhook_deliveries_total` | counter | `result`: `delivered`, `failed` |
+
+## Docker image
+
+Distroless, non-root, `HEALTHCHECK` on `/health`. Volumes: `/templates`, `/fonts` (added to the embedded fonts), `/packages` (`@preview` packages as `/packages/preview/<name>/<version>`, added to the preloaded set listed in `packages/packages.txt`). Port `3000`. The server runs as UID 65532 (`nonroot`): mounted volumes must be readable by it.
+
 ## Templates
 
 ```
@@ -122,7 +143,7 @@ Anti-SSRF: HTTPS only, no credentials in the URL, no redirects, no proxy. Privat
   schema.json     # optional JSON Schema for `data`, checked before compiling
   logo.png, …     # template files, readable from main.typ
 ```
-Fonts: embedded set + `/fonts` volume (no per-request fonts). Packages: preloaded `@preview` set + `/packages` volume, no download at runtime.
+Fonts: embedded set + `/fonts` volume (no per-request fonts). Packages: preloaded `@preview` set + `/packages` volume, no download at runtime. Every package found is importable unless `PDFQ_ALLOWED_PACKAGES` restricts the list.
 
 ## Limits
 

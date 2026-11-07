@@ -419,6 +419,7 @@ async fn requests_beyond_capacity_are_refused_before_reading_them() {
 #[tokio::test(flavor = "multi_thread")]
 async fn health_and_readiness() {
     let app = app();
+    wait_ready(&app).await;
     let (status, _, body) = send(
         app.clone(),
         Request::get("/health").body(Body::empty()).unwrap(),
@@ -428,7 +429,11 @@ async fn health_and_readiness() {
     let body: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["typst_version"], "0.15.1");
 
-    wait_ready(&app).await;
+    // No worker can start: unhealthy.
+    let broken = pdfq_server::start(config(), "/nonexistent/pdfq-worker".into());
+    let request = Request::get("/health").body(Body::empty()).unwrap();
+    let (status, _, _) = send(pdfq_server::api::router(broken), request).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 /// Waits until a worker is up (workers start asynchronously).
@@ -589,4 +594,70 @@ async fn archive_shares_the_upload_budget() {
         "payload_too_large",
     )
     .await;
+}
+
+/// Parses the exposition format into (series, value), checking every line.
+fn parse_metrics(text: &str) -> Vec<(String, f64)> {
+    text.lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(|l| {
+            let (series, value) = l.rsplit_once(' ').unwrap_or_else(|| panic!("bad line {l}"));
+            (
+                series.to_string(),
+                value.parse().unwrap_or_else(|_| panic!("bad value {l}")),
+            )
+        })
+        .collect()
+}
+
+fn metric(metrics: &[(String, f64)], series: &str) -> f64 {
+    metrics
+        .iter()
+        .find(|(s, _)| s == series)
+        .unwrap_or_else(|| panic!("no {series}"))
+        .1
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exposes_prometheus_metrics() {
+    let state = pdfq_server::start(config(), common::worker_bin());
+    let app = pdfq_server::api::router(state.clone());
+    let ok = multipart(&[("file", Some("main.typ"), b"Hello")]);
+    assert_eq!(send(app.clone(), ok).await.0, StatusCode::OK);
+    let broken = multipart(&[("file", Some("main.typ"), b"#let x = (")]);
+    assert_eq!(
+        send(app.clone(), broken).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Scraping bypasses admission: hold every slot first.
+    let capacity = 2 + config().queue_size;
+    let _held: Vec<_> = (0..capacity).map(|_| state.admit().unwrap()).collect();
+    assert!(state.admit().is_err());
+
+    let (status, headers, body) =
+        send(app, Request::get("/metrics").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain; version=0.0.4")
+    );
+    let metrics = parse_metrics(&String::from_utf8(body).unwrap());
+    assert_eq!(
+        metric(&metrics, r#"pdfq_jobs_total{outcome="succeeded"}"#),
+        1.0
+    );
+    assert_eq!(
+        metric(&metrics, r#"pdfq_jobs_total{outcome="compile_error"}"#),
+        1.0
+    );
+    assert_eq!(metric(&metrics, "pdfq_job_duration_seconds_count"), 2.0);
+    assert_eq!(
+        metric(&metrics, r#"pdfq_job_duration_seconds_bucket{le="+Inf"}"#),
+        2.0
+    );
+    assert_eq!(metric(&metrics, "pdfq_requests_rejected_total"), 1.0);
+    assert!(metric(&metrics, "pdfq_worker_spawns_total") >= 1.0);
 }

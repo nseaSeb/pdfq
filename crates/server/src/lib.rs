@@ -5,6 +5,7 @@ pub mod api;
 pub mod config;
 pub mod error;
 pub mod jobs;
+pub mod metrics;
 pub mod pool;
 mod request;
 mod schema;
@@ -91,5 +92,6 @@ pub fn start(config: Config, worker_bin: PathBuf) -> AppState {
         schemas: Default::default(),
         jobs,
         webhooks,
+        rejected: Default::default(),
     }
 }

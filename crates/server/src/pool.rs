@@ -85,6 +85,8 @@ pub struct PoolStats {
     pub died_cpu: AtomicU64,
     pub crashed: AtomicU64,
     pub recycled: AtomicU64,
+    /// Outcomes and durations of every job, sync or async.
+    pub jobs: crate::metrics::JobMetrics,
 }
 
 pub type JobResult = Result<JobOutput, JobError>;
@@ -162,10 +164,12 @@ impl Pool {
                 on_start,
             })
             .map_err(|_| {
-                JobError::new(
+                let error = JobError::new(
                     ErrorKind::QueueFull,
                     "the compilation queue is full, retry later",
-                )
+                );
+                self.stats.jobs.record::<()>(&Err(error.clone()), None);
+                error
             })?;
         Ok(receiver)
     }
@@ -210,10 +214,12 @@ async fn run_slot(
                     // With no worker running anywhere, queued jobs would wait forever.
                     if stats.ready_workers.load(Ordering::Relaxed) == 0 {
                         while let Ok(task) = queue.try_recv() {
-                            let _ = task.reply.send(Err(JobError::new(
+                            let result = Err(JobError::new(
                                 ErrorKind::WorkerCrashed,
                                 "no worker is available",
-                            )));
+                            ));
+                            stats.jobs.record(&result, None);
+                            let _ = task.reply.send(result);
                         }
                     }
                     tokio::time::sleep(SPAWN_BACKOFF).await;
@@ -226,10 +232,12 @@ async fn run_slot(
             continue; // The client went away while the job was queued.
         }
         if task.enqueued.elapsed() > config.queue_timeout {
-            let _ = task.reply.send(Err(JobError::new(
+            let result = Err(JobError::new(
                 ErrorKind::QueueFull,
                 "timed out waiting for a worker, retry later",
-            )));
+            ));
+            stats.jobs.record(&result, None);
+            let _ = task.reply.send(result);
             continue;
         }
 
@@ -239,8 +247,10 @@ async fn run_slot(
         }
         let w = worker.as_mut().expect("worker spawned above");
         stats.busy_workers.fetch_add(1, Ordering::Relaxed);
+        let started = std::time::Instant::now();
         let (result, alive) = w.run(&task.job, &config, &stats).await;
         stats.busy_workers.fetch_sub(1, Ordering::Relaxed);
+        stats.jobs.record(&result, Some(started.elapsed()));
         let _ = task.reply.send(result);
 
         w.jobs += 1;

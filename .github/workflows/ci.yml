@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux runs the memory cases of the hostile corpus (RLIMIT_AS is not
+        # enforced on macOS) and requires veraPDF.
+        include:
+          - os: ubuntu-24.04
+            verapdf: true
+          - os: ubuntu-24.04-arm
+            verapdf: true
+          - os: macos-15
+            verapdf: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install veraPDF (container wrapper)
+        if: matrix.verapdf
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$PWD/scripts/verapdf-docker.sh" "$RUNNER_TEMP/bin/verapdf"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "PDFQ_REQUIRE_VERAPDF=1" >> "$GITHUB_ENV"
+      - run: cargo test --locked --workspace
+
+  docker:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: pdfq:ci
+          cache-from: type=gha,scope=${{ matrix.os }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.os }}
+      - run: ./scripts/smoke-image.sh pdfq:ci

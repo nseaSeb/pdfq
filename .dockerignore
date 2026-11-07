@@ -1,0 +1,7 @@
+target/
+prototypes/
+.git/
+.github/
+.token-optimizer/
+**/*.pdf
+!tests/fixtures/**/*.pdf

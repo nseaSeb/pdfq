@@ -1,0 +1,32 @@
+# @preview packages baked into the Docker image (https://typst.app/universe).
+# Documents can import them with `#import "@preview/<name>:<version>"`.
+#
+# Format: name version sha256-of-the-tarball (from packages.typst.org).
+# - To enable a package: uncomment its line(s), including its dependencies, and
+#   the matching example in packages/smoke.typ, then rebuild the image.
+# - To add one: append `name version sha256` (sha256 of
+#   https://packages.typst.org/preview/<name>-<version>.tar.gz) and import it in
+#   packages/smoke.typ. The build fails on a wrong hash, on a missing dependency,
+#   and on a package that smoke.typ does not exercise.
+# - Without rebuilding: mount packages at /packages/preview/<name>/<version>.
+
+# QR codes and barcodes (payment QR codes, product barcodes on invoices).
+tiaoma 0.3.0 c646c3f41c3f1a062ff1558f070187ac970b7d350f00b31f45133e059c9981be
+
+# Number formatting: thousands separators, decimals, units ("1 234,50").
+zero 0.7.1 1ba20eb40b859c9d6221a6b05d7eb94eb23203c749f74b48814ed2e64d4771e0
+
+# --- Optional, disabled by default -------------------------------------------
+
+# Drawings, diagrams and charts. Needs oxifmt.
+# cetz 0.5.3 79ca64869c60aefaf0eccc7e7371ab47cc6cb85bce1ad222e42cf1879c965b5f
+
+# String formatting (Rust-style `strfmt("{:.2}", x)`). Also a dependency of cetz.
+# oxifmt 1.0.0 7d17a1fc8ad01740ec3cb2b03c7360a4225ff9318e5710765fa98ea6fd59594f
+
+# Styled boxes (callouts, notes, warnings).
+# showybox 2.0.4 2d415e38ad85143bb0ca7a41f47cdcbbf3186a002a9c637ce3df7ced7125858f
+
+# Source code blocks with line numbers and language badges. Needs elembic.
+# codly 2.0.0 44f3e3cf26fca483f0e682f0159c5026af0a2dd22e55703a6bb2d4e337d5915e
+# elembic 1.1.1 e3a8ec6b2ad5f43d93ae31dd5742de7256c57719675636179cd818f26ca7bb88

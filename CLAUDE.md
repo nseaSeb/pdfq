@@ -52,6 +52,18 @@ cargo test
 cargo run -p pdfq-cli -- compile examples/invoice/main.typ --data examples/invoice/data.json -o out.pdf
 ```
 
+Docker and CI:
+
+```sh
+docker build -t pdfq:dev .            # builds, fetches packages (sha256-checked), smoke-compiles them
+./scripts/smoke-image.sh pdfq:dev     # runs the image: health, compile, packages, Factur-X, rlimits, metrics
+docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:latest   # lint workflows
+```
+
+- Toolchain, Rust image and distroless image are pinned together (`rust-toolchain.toml`, `Dockerfile` digests); bump them together.
+- Preloaded packages: `packages/packages.txt` (name, version, tarball sha256, dependencies included) and `packages/smoke.typ` (imports each one).
+- CI: lint, tests on amd64/arm64/macOS (veraPDF through `scripts/verapdf-docker.sh`, required on Linux), image build + smoke on both arches. No image is published: CI only builds the image and runs `scripts/smoke-image.sh` against it.
+
 `PR_SET_PDEATHSIG` fires when the *spawning thread* exits: spawn workers from Tokio worker threads, never from `spawn_blocking`.
 
 `RLIMIT_AS` is not enforced on macOS, so memory cases of the hostile corpus only run on Linux: `./scripts/test-linux.sh` (Docker). `pre_exec` code must stay async-signal-safe (no allocation, no logging).
