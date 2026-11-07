@@ -36,6 +36,7 @@ pub fn status(kind: ErrorKind) -> StatusCode {
     match kind {
         ErrorKind::InvalidInput | ErrorKind::SchemaViolation => StatusCode::BAD_REQUEST,
         ErrorKind::NotFound => StatusCode::NOT_FOUND,
+        ErrorKind::NotFinished => StatusCode::CONFLICT,
         ErrorKind::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         ErrorKind::CompileError
         | ErrorKind::PackageNotAllowed

@@ -4,3 +4,4 @@ prototypes/*/out.pdf
 *.pdf
 !tests/fixtures/**/*.pdf
 .DS_Store
+.token-optimizer/

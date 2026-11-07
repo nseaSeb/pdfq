@@ -53,16 +53,17 @@ Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", de
 
 **`POST /compile` success:** `200 application/pdf`, headers `X-Pdfq-Pages`, `X-Pdfq-Warnings` (count), `X-Pdfq-Duration-Ms`.
 
-**`POST /jobs`:** `202 {"job_id": "<uuid>", "status_url": "/jobs/<uuid>"}`.
+**`POST /jobs`:** `202 {"job_id": "<uuid>", "status_url": "/jobs/<uuid>"}`, with a `Location` header. Input errors are reported synchronously (same codes as `/compile`); `429` when the job store is full. An accepted job that waits longer than `PDFQ_QUEUE_TIMEOUT` for a worker ends `failed` with `queue_full`: resubmit it.
 
 **`GET /jobs/{id}`:**
 ```json
 { "id": "…", "status": "queued|running|succeeded|failed",
   "created_at": "…", "finished_at": "…", "pages": 3,
   "warnings": [ { "message": "…", "file": "main.typ", "line": 4, "column": 2 } ],
-  "error": null }
+  "error": null,
+  "webhook": { "state": "pending|delivered|failed", "attempts": 1 } }
 ```
-**`GET /jobs/{id}/pdf`:** `200` PDF, `409` not finished, `422` job failed (error body), `404` unknown or expired.
+**`GET /jobs/{id}/pdf`:** `200` PDF, `409` not finished, `422` job failed (error body, whatever its `kind`), `404` unknown or expired. `webhook` is `null` without `callback_url`.
 
 **Errors** (every endpoint):
 ```json
@@ -83,16 +84,32 @@ Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", de
 | `output_too_large` | 422 | PDF size limit exceeded |
 | `timeout` | 422 | CPU or wall-clock limit (`detail`: `cpu` / `wall`) |
 | `memory_limit` | 422 | Memory limit |
-| `queue_full` | 429 | Queue full, `Retry-After` set |
+| `not_finished` | 409 | `GET /jobs/{id}/pdf` before the job finished |
+| `queue_full` | 429 | Queue or job store full, `Retry-After` set |
 | `worker_crashed` | 500 | Unexpected worker failure |
 
 Document-caused failures are 4xx on purpose: they are deterministic and must not trigger automatic retries.
 
 ## Webhook
 
-On completion, `POST callback_url` with the PDF (`application/pdf`) on success, or the error JSON on failure.
-Headers: `X-Pdfq-Job-Id`, `X-Pdfq-Status`, `X-Pdfq-Timestamp`, `X-Pdfq-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>`.
-Up to 3 retries (1 s, 4 s, 16 s) on network errors and 5xx. No redirects. HTTPS required; private, loopback and link-local addresses refused; optional domain allowlist.
+Disabled unless `PDFQ_WEBHOOK_SECRET` is set (`callback_url` is then refused with `400`).
+
+On completion, `POST callback_url` with the PDF (`application/pdf`) on success, or the error JSON (`{"error": {…}}`, `application/json`) on failure.
+Headers: `X-Pdfq-Job-Id`, `X-Pdfq-Status` (`succeeded`/`failed`), `X-Pdfq-Timestamp` (Unix seconds), `X-Pdfq-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>`. Receivers should check the signature and reject old timestamps.
+
+Any 2xx is a delivery. Network errors, 5xx and 429 are retried (`PDFQ_WEBHOOK_RETRIES` times, delay ×4 from `PDFQ_WEBHOOK_RETRY_DELAY`: 1 s, 4 s, 16 s by default); other statuses are final. The outcome is shown in `GET /jobs/{id}`. The webhook reports the stored outcome: a PDF that does not fit in the job store is reported as `failed`. A job's TTL starts once its webhook is settled; until then it is never evicted.
+
+Anti-SSRF: HTTPS only, no credentials in the URL, no redirects, no proxy. Private, loopback, link-local and reserved addresses are refused, both as IP literals and after DNS resolution (each connection is checked, so DNS rebinding does not help).
+
+| Variable | Default | |
+|---|---|---|
+| `PDFQ_WEBHOOK_SECRET` | — | HMAC key; enables webhooks |
+| `PDFQ_WEBHOOK_ALLOWED_HOSTS` | any | Comma-separated hosts, `*.example.com` matches subdomains |
+| `PDFQ_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow private and loopback targets (internal networks) |
+| `PDFQ_WEBHOOK_ALLOW_HTTP` | `false` | Allow plain `http` |
+| `PDFQ_WEBHOOK_TIMEOUT` | `10s` | Per attempt |
+| `PDFQ_WEBHOOK_RETRIES` | `3` | Retries after the first attempt |
+| `PDFQ_WEBHOOK_RETRY_DELAY` | `1s` | First retry delay |
 
 ## Templates
 
@@ -123,6 +140,8 @@ Every limit has a default and can be overridden with an environment variable (or
 | `PDFQ_MEMORY_LIMIT` | `512MiB` | Memory per job, above the worker baseline |
 | `PDFQ_QUEUE_SIZE` | `64` | Queued jobs before `429`. At most `workers + queue size` requests are read at once; extra ones get `429` before their body is read |
 | `PDFQ_JOB_TTL` | `1h` | Async job retention after completion |
+| `PDFQ_MAX_JOBS` | `1000` | Async jobs kept in memory; the oldest finished ones are evicted first, then `POST /jobs` gets `429` |
+| `PDFQ_MAX_STORED_SIZE` | `1GiB` | Total size of stored PDFs, including those awaiting webhook delivery. The oldest settled jobs are evicted beyond it; a larger PDF fails with `output_too_large`, and if only undelivered results remain the job fails with `queue_full` |
 
 Limits are server-wide in v1: a request cannot raise or lower them.
 

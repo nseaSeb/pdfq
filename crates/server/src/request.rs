@@ -33,6 +33,8 @@ pub struct JsonRequest {
     pub date: Option<String>,
     #[serde(default)]
     pub strict: bool,
+    #[serde(default)]
+    pub callback_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -54,6 +56,7 @@ struct Builder<'a> {
     archive: bool,
     file_parts: bool,
     entrypoint: Option<String>,
+    callback_url: Option<String>,
     /// `data` as received and parsed.
     data: Option<(String, Value)>,
     strict_set: bool,
@@ -76,6 +79,7 @@ impl<'a> Builder<'a> {
             config,
             schemas,
             strict_set: false,
+            callback_url: None,
             template: None,
             files: Files::new(limits),
             assets: Files::new(limits),
@@ -158,7 +162,8 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<Job, ApiError> {
+    fn finish(mut self) -> Result<Parsed, ApiError> {
+        let callback_url = self.callback_url.take();
         let sources = [self.template.is_some(), self.file_parts, self.archive];
         match sources.iter().filter(|&&s| s).count() {
             0 => {
@@ -209,7 +214,7 @@ impl<'a> Builder<'a> {
         if let Some((json, _)) = self.data {
             inputs.push(("data".into(), json));
         }
-        Ok(Job {
+        let job = Job {
             source,
             inputs,
             options: JobOptions {
@@ -220,8 +225,15 @@ impl<'a> Builder<'a> {
                 date: self.date,
                 strict: self.strict,
             },
-        })
+        };
+        Ok(Parsed { job, callback_url })
     }
+}
+
+/// A parsed request: the job and, for async jobs, the callback URL.
+pub struct Parsed {
+    pub job: Job,
+    pub callback_url: Option<String>,
 }
 
 fn template_dir(config: &Config, name: &str) -> Result<std::path::PathBuf, ApiError> {
@@ -339,8 +351,7 @@ pub async fn from_multipart(
     mut multipart: Multipart,
     config: &Config,
     schemas: &SchemaCache,
-    extra: &mut (dyn FnMut(&str, String) -> Result<bool, ApiError> + Send),
-) -> Result<Job, ApiError> {
+) -> Result<Parsed, ApiError> {
     let mut b = Builder::new(config, schemas);
     let text_cap = config.max_data_size;
     while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
@@ -416,12 +427,11 @@ pub async fn from_multipart(
             {
                 return Err(ApiError::invalid(format!("`{name}` is not supported yet")));
             }
-            _ => {
-                let value = read_text(field, 4096, &name).await?;
-                if !extra(&name, value)? {
-                    return Err(ApiError::invalid(format!("unknown field `{name}`")));
-                }
+            "callback_url" => {
+                let value = read_text(field, crate::webhook::MAX_URL_LEN as u64, &name).await?;
+                Builder::set_once(&mut b.callback_url, "callback_url", value)?;
             }
+            _ => return Err(ApiError::invalid(format!("unknown field `{name}`"))),
         }
     }
     b.finish()
@@ -432,7 +442,7 @@ pub fn from_json(
     body: JsonRequest,
     config: &Config,
     schemas: &SchemaCache,
-) -> Result<Job, ApiError> {
+) -> Result<Parsed, ApiError> {
     let mut b = Builder::new(config, schemas);
     b.template = Some(body.template);
     if let Some(data) = body.data {
@@ -450,5 +460,6 @@ pub fn from_json(
         b.set_date(&date)?;
     }
     b.strict = body.strict;
+    b.callback_url = body.callback_url;
     b.finish()
 }

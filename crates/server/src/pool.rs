@@ -89,10 +89,19 @@ pub struct PoolStats {
 
 pub type JobResult = Result<JobOutput, JobError>;
 
+/// The error of a job whose result sender was dropped.
+pub fn stopped() -> JobError {
+    JobError::new(ErrorKind::WorkerCrashed, "the worker pool stopped")
+}
+
+/// Called when a worker picks the job up.
+pub type OnStart = Box<dyn FnOnce() + Send>;
+
 struct Task {
     job: Job,
     reply: oneshot::Sender<JobResult>,
     enqueued: Instant,
+    on_start: Option<OnStart>,
 }
 
 /// Handle to the pool. Dropping it stops the workers once the queue drains.
@@ -126,7 +135,16 @@ impl Pool {
 
     /// Queues a job. Fails immediately with `queue_full` when the queue is full.
     /// Dropping the returned receiver before a worker picks the job up cancels it.
-    pub fn submit(&self, mut job: Job) -> Result<oneshot::Receiver<JobResult>, JobError> {
+    pub fn submit(&self, job: Job) -> Result<oneshot::Receiver<JobResult>, JobError> {
+        self.submit_with(job, None)
+    }
+
+    /// Like [`Self::submit`], calling `on_start` when a worker picks the job up.
+    pub fn submit_with(
+        &self,
+        mut job: Job,
+        on_start: Option<OnStart>,
+    ) -> Result<oneshot::Receiver<JobResult>, JobError> {
         // The pool's output limit also sizes the response frame: never let a job exceed it.
         let pool_max = self.max_output_size;
         let job_max = job.options.max_output_size;
@@ -141,6 +159,7 @@ impl Pool {
                 job,
                 reply,
                 enqueued: Instant::now(),
+                on_start,
             })
             .map_err(|_| {
                 JobError::new(
@@ -154,12 +173,7 @@ impl Pool {
     /// Queues a job and waits for its result.
     pub async fn compile(&self, job: Job) -> JobResult {
         let receiver = self.submit(job)?;
-        receiver.await.unwrap_or_else(|_| {
-            Err(JobError::new(
-                ErrorKind::WorkerCrashed,
-                "the worker pool stopped",
-            ))
-        })
+        receiver.await.unwrap_or_else(|_| Err(stopped()))
     }
 
     /// Jobs waiting for a worker.
@@ -219,6 +233,10 @@ async fn run_slot(
             continue;
         }
 
+        let mut task = task;
+        if let Some(on_start) = task.on_start.take() {
+            on_start();
+        }
         let w = worker.as_mut().expect("worker spawned above");
         stats.busy_workers.fetch_add(1, Ordering::Relaxed);
         let (result, alive) = w.run(&task.job, &config, &stats).await;

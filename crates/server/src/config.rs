@@ -72,6 +72,39 @@ pub struct Config {
     /// Directory holding one sub-directory per template.
     #[arg(long, env = "PDFQ_TEMPLATE_DIR")]
     pub template_dir: Option<PathBuf>,
+
+    /// How long finished async jobs are kept.
+    #[arg(long, env = "PDFQ_JOB_TTL", default_value = "1h", value_parser = parse_duration)]
+    pub job_ttl: Duration,
+    /// Maximum number of async jobs kept in memory (pending and finished).
+    #[arg(long, env = "PDFQ_MAX_JOBS", default_value_t = 1000)]
+    pub max_jobs: usize,
+    /// Maximum total size of the PDFs kept for async jobs.
+    #[arg(long, env = "PDFQ_MAX_STORED_SIZE", default_value = "1GiB", value_parser = parse_size)]
+    pub max_stored_size: u64,
+
+    /// Secret used to sign webhooks (HMAC-SHA256). Webhooks are disabled without it.
+    #[arg(long, env = "PDFQ_WEBHOOK_SECRET", hide_env_values = true)]
+    pub webhook_secret: Option<String>,
+    /// Hosts allowed as callback targets, like hooks.example.com or *.example.com
+    /// (comma-separated). Default: any public host.
+    #[arg(long, env = "PDFQ_WEBHOOK_ALLOWED_HOSTS", value_delimiter = ',')]
+    pub webhook_allowed_hosts: Vec<String>,
+    /// Allow callbacks to private, loopback and link-local addresses.
+    #[arg(long, env = "PDFQ_WEBHOOK_ALLOW_PRIVATE", default_value_t = false)]
+    pub webhook_allow_private: bool,
+    /// Allow plain http:// callbacks.
+    #[arg(long, env = "PDFQ_WEBHOOK_ALLOW_HTTP", default_value_t = false)]
+    pub webhook_allow_http: bool,
+    /// Timeout of each webhook attempt.
+    #[arg(long, env = "PDFQ_WEBHOOK_TIMEOUT", default_value = "10s", value_parser = parse_duration)]
+    pub webhook_timeout: Duration,
+    /// Webhook retries after the first attempt.
+    #[arg(long, env = "PDFQ_WEBHOOK_RETRIES", default_value_t = 3)]
+    pub webhook_retries: u32,
+    /// Delay before the first webhook retry; multiplied by 4 each time (1s, 4s, 16s).
+    #[arg(long, env = "PDFQ_WEBHOOK_RETRY_DELAY", default_value = "1s", value_parser = parse_duration)]
+    pub webhook_retry_delay: Duration,
 }
 
 impl Config {

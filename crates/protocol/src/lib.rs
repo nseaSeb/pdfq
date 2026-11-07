@@ -167,6 +167,8 @@ pub enum ErrorKind {
     MemoryLimit,
     QueueFull,
     WorkerCrashed,
+    /// HTTP only: the async job has not finished yet.
+    NotFinished,
 }
 
 /// A Typst diagnostic resolved to a file, line and column (1-based).

@@ -4,11 +4,13 @@
 pub mod api;
 pub mod config;
 pub mod error;
+pub mod jobs;
 pub mod pool;
 mod request;
 mod schema;
 mod spawn;
 pub mod validate;
+pub mod webhook;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -16,7 +18,9 @@ use std::sync::Arc;
 
 use crate::api::AppState;
 use crate::config::Config;
+use crate::jobs::{JobStore, StoreLimits};
 use crate::pool::{Pool, PoolConfig};
+use crate::webhook::{WebhookConfig, Webhooks};
 
 /// Worker pool settings derived from the server configuration.
 pub fn pool_config(config: &Config, worker_bin: PathBuf) -> PoolConfig {
@@ -56,10 +60,36 @@ pub fn start(config: Config, worker_bin: PathBuf) -> AppState {
         pool_config.workers.max(1) + pool_config.queue_size.max(1),
     ));
     let pool = Pool::start(pool_config);
+    let jobs = Arc::new(JobStore::new(StoreLimits {
+        ttl: config.job_ttl,
+        max_jobs: config.max_jobs,
+        max_bytes: config.max_stored_size,
+    }));
+    // Expired jobs are also purged on access; this frees memory when idle.
+    let sweeper = Arc::downgrade(&jobs);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            let Some(jobs) = sweeper.upgrade() else { break };
+            jobs.purge_expired();
+        }
+    });
+    let webhooks = Webhooks::new(WebhookConfig {
+        secret: config.webhook_secret.clone(),
+        allowed_hosts: config.webhook_allowed_hosts.clone(),
+        allow_private: config.webhook_allow_private,
+        allow_http: config.webhook_allow_http,
+        timeout: config.webhook_timeout,
+        retries: config.webhook_retries,
+        retry_delay: config.webhook_retry_delay,
+    });
     AppState {
         config: Arc::new(config),
         pool: Arc::new(pool),
         admission,
         schemas: Default::default(),
+        jobs,
+        webhooks,
     }
 }

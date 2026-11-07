@@ -3,20 +3,23 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Request, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use pdfq_protocol::{ErrorKind, Job, TYPST_VERSION};
+use pdfq_protocol::{ErrorKind, JobError, TYPST_VERSION};
 use serde_json::json;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 
 use crate::config::Config;
 use crate::error::ApiError;
-use crate::pool::Pool;
-use crate::request::{self, JsonRequest};
+use crate::jobs::{JobStore, Pdf, WebhookState};
+use crate::pool::{self, JobResult, Pool};
+use crate::request::{self, JsonRequest, Parsed};
 use crate::schema::SchemaCache;
+use crate::webhook::{Delivery, Webhooks};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +29,8 @@ pub struct AppState {
     /// is read, so a burst of large uploads cannot exhaust the server's memory.
     pub admission: Arc<Semaphore>,
     pub schemas: Arc<SchemaCache>,
+    pub jobs: Arc<JobStore>,
+    pub webhooks: Webhooks,
 }
 
 impl AppState {
@@ -46,6 +51,9 @@ pub fn router(state: AppState) -> Router {
         .saturating_add(1 << 20);
     Router::new()
         .route("/compile", post(compile))
+        .route("/jobs", post(create_job))
+        .route("/jobs/{id}", get(job_status))
+        .route("/jobs/{id}/pdf", get(job_pdf))
         .route("/health", get(health))
         .route("/ready", get(ready))
         .layer(DefaultBodyLimit::max(body_limit))
@@ -53,11 +61,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// Parses a compile request, multipart or JSON.
-pub async fn parse_job(
-    state: &AppState,
-    request: Request,
-    extra: &mut (dyn FnMut(&str, String) -> Result<bool, ApiError> + Send),
-) -> Result<Job, ApiError> {
+pub async fn parse_job(state: &AppState, request: Request) -> Result<Parsed, ApiError> {
     let content_type = request
         .headers()
         .get(header::CONTENT_TYPE)
@@ -68,7 +72,7 @@ pub async fn parse_job(
         let multipart = Multipart::from_request(request, state)
             .await
             .map_err(|e| ApiError::invalid(e.body_text()))?;
-        request::from_multipart(multipart, &state.config, &state.schemas, extra).await
+        request::from_multipart(multipart, &state.config, &state.schemas).await
     } else if content_type.starts_with("application/json") {
         let Json(body) = Json::<JsonRequest>::from_request(request, state)
             .await
@@ -89,31 +93,15 @@ pub async fn parse_job(
 
 async fn compile(State(state): State<AppState>, request: Request) -> Result<Response, ApiError> {
     let _permit = state.admit()?;
-    let job = parse_job(&state, request, &mut |_, _| Ok(false)).await?;
+    let Parsed { job, callback_url } = parse_job(&state, request).await?;
+    if callback_url.is_some() {
+        return Err(ApiError::invalid(
+            "`callback_url` is only allowed on POST /jobs",
+        ));
+    }
     let start = Instant::now();
     let receiver = state.pool.submit(job)?;
-    // Queue wait + compilation, with some slack for worker respawns. Dropping the
-    // receiver cancels a job that is still queued.
-    let deadline = state
-        .config
-        .queue_timeout
-        .saturating_add(state.config.wall_timeout)
-        .saturating_add(Duration::from_secs(5));
-    let output = match tokio::time::timeout(deadline, receiver).await {
-        Ok(Ok(result)) => result?,
-        Ok(Err(_)) => {
-            return Err(ApiError::new(
-                ErrorKind::WorkerCrashed,
-                "the worker pool stopped",
-            ));
-        }
-        Err(_) => {
-            return Err(ApiError::new(
-                ErrorKind::QueueFull,
-                "timed out waiting for a worker",
-            ));
-        }
-    };
+    let output = wait_result(&state.config, receiver).await?;
 
     let mut response = output.pdf.into_response();
     let headers = response.headers_mut();
@@ -128,6 +116,144 @@ async fn compile(State(state): State<AppState>, request: Request) -> Result<Resp
         (start.elapsed().as_millis() as u64).into(),
     );
     Ok(response)
+}
+
+async fn create_job(State(state): State<AppState>, request: Request) -> Result<Response, ApiError> {
+    let parsed = {
+        // Admission only bounds request parsing here; the queue bounds the jobs.
+        let _permit = state.admit()?;
+        parse_job(&state, request).await?
+    };
+    let callback = parsed
+        .callback_url
+        .as_deref()
+        .map(|u| state.webhooks.validate(u))
+        .transpose()?;
+
+    let id = state.jobs.create(callback.is_some())?;
+    let jobs = state.jobs.clone();
+    let on_start = Box::new(move || jobs.set_running(id));
+    let receiver = match state.pool.submit_with(parsed.job, Some(on_start)) {
+        Ok(receiver) => receiver,
+        Err(err) => {
+            state.jobs.remove(id);
+            return Err(err.into());
+        }
+    };
+
+    let (jobs, webhooks, config) = (
+        state.jobs.clone(),
+        state.webhooks.clone(),
+        state.config.clone(),
+    );
+    tokio::spawn(async move {
+        // The webhook reports what the store recorded (a PDF may not fit in it).
+        let stored = match wait_result(&config, receiver).await {
+            Ok(output) => {
+                let pdf = Bytes::from(output.pdf);
+                jobs.succeed(id, pdf.clone(), output.pages, output.warnings)
+                    .map(|()| pdf)
+            }
+            Err(error) => {
+                jobs.fail(id, error.clone());
+                Err(error)
+            }
+        };
+        let (status, content_type, body) = match stored {
+            Ok(pdf) => ("succeeded", "application/pdf", pdf),
+            Err(error) => {
+                let body = serde_json::to_vec(&json!({ "error": error })).unwrap_or_default();
+                ("failed", "application/json", Bytes::from(body))
+            }
+        };
+        let delivery = callback.map(|url| {
+            let delivery = Delivery {
+                job_id: id.to_string(),
+                status,
+                content_type,
+                body,
+            };
+            (url, delivery)
+        });
+        if let Some((url, delivery)) = delivery {
+            let report = webhooks.deliver(url, delivery).await;
+            let state = if report.delivered {
+                WebhookState::Delivered
+            } else {
+                WebhookState::Failed
+            };
+            jobs.set_webhook(id, state, report.attempts);
+        }
+    });
+
+    let location = format!("/jobs/{id}");
+    let body = json!({ "job_id": id.to_string(), "status_url": location });
+    let mut response = (StatusCode::ACCEPTED, Json(body)).into_response();
+    if let Ok(value) = HeaderValue::from_str(&location) {
+        response.headers_mut().insert(header::LOCATION, value);
+    }
+    Ok(response)
+}
+
+/// Waits for a job: queue wait plus compilation, with slack for worker respawns.
+/// Dropping the receiver on timeout cancels a job that is still queued.
+async fn wait_result(config: &Config, receiver: oneshot::Receiver<JobResult>) -> JobResult {
+    let deadline = config
+        .queue_timeout
+        .saturating_add(config.wall_timeout)
+        .saturating_add(Duration::from_secs(5));
+    match tokio::time::timeout(deadline, receiver).await {
+        Ok(result) => result.unwrap_or_else(|_| Err(pool::stopped())),
+        Err(_) => Err(JobError::new(
+            ErrorKind::QueueFull,
+            "timed out waiting for a worker",
+        )),
+    }
+}
+
+fn job_id(raw: &str) -> Result<uuid::Uuid, ApiError> {
+    uuid::Uuid::parse_str(raw).map_err(|_| not_found())
+}
+
+fn not_found() -> ApiError {
+    ApiError::new(ErrorKind::NotFound, "unknown or expired job")
+}
+
+async fn job_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::jobs::JobView>, ApiError> {
+    state
+        .jobs
+        .view(job_id(&id)?)
+        .map(Json)
+        .ok_or_else(not_found)
+}
+
+async fn job_pdf(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    match state.jobs.pdf(job_id(&id)?).ok_or_else(not_found)? {
+        Pdf::Ready(pdf) => {
+            let mut response = Body::from(pdf).into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/pdf"),
+            );
+            Ok(response)
+        }
+        Pdf::NotFinished => Err(ApiError::new(
+            ErrorKind::NotFinished,
+            "the job has not finished yet",
+        )),
+        // Always 422, whatever the job's error: retrying this request cannot help.
+        Pdf::Failed(error) => Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": error })),
+        )
+            .into_response()),
+    }
 }
 
 async fn health() -> Json<serde_json::Value> {

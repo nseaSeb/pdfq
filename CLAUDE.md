@@ -13,9 +13,11 @@ HTTP service that compiles Typst documents to PDF, sync or async (webhook). Stat
 | `crates/cli` (`pdfq-cli`) | done | `pdfq-cli compile in.typ -o out.pdf` — dev/debug, no isolation |
 | `crates/protocol` (`pdfq-protocol`) | done | `Job`/`WorkerMessage`/`JobError`/`Diagnostic`; frames = u32 LE length + postcard |
 | `crates/worker` (`pdfq-worker`) | done | One job at a time over stdin/stdout, per-job soft rlimits, OOM allocator (exit 3) |
-| `crates/server` (`pdfq-server`, binary `pdfq`) | sync API done | `pool`: worker supervisor; `config`: clap + `PDFQ_*`; `request`: multipart/JSON parsing; `validate`: paths, sizes, zip, image headers; `api`: `/compile`, `/health`, `/ready`; `error`: `JobError` to HTTP status |
+| `crates/server` (`pdfq-server`, binary `pdfq`) | sync + async API done | `pool`: worker supervisor; `config`: clap + `PDFQ_*`; `request`: multipart/JSON parsing; `validate`: paths, sizes, zip, image headers; `api`: `/compile`, `/jobs`, `/health`, `/ready`; `jobs`: in-memory TTL store (bounded count and bytes); `webhook`: signed delivery, retries, anti-SSRF; `error`: `JobError` to HTTP status |
 
 Security model: every compilation runs in a separate worker process. The supervisor sets hard rlimits in `pre_exec` (`crates/server/src/spawn.rs`); before each job the worker lowers its own soft `RLIMIT_AS` (current VmSize + budget) and `RLIMIT_CPU` (used + budget), because both are cumulative over the process life (`crates/worker/src/limits.rs`). Death is classified in `pool::classify`: exit 3 = `memory_limit`, SIGXCPU = `timeout`/cpu, our SIGKILL after the wall timeout = `timeout`/wall. The server never links Typst.
+
+Webhook SSRF guard: IP literals are checked in `Webhooks::validate` (reqwest skips the resolver for them), hostnames by `GuardedResolver` at each connection (no rebinding); no redirects, no proxy.
 
 Hostile corpus: `tests/fixtures/hostile/`, exercised by `crates/server/tests/hostile.rs` (the test builds `pdfq-worker` itself, or uses `PDFQ_WORKER_BIN`).
 
