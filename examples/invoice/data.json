@@ -1,0 +1,10 @@
+{
+  "number": "F-2026-001",
+  "date": "2026-11-07",
+  "seller": { "name": "Example SAS", "address": "1 rue de la Paix, 75002 Paris" },
+  "client": { "name": "ACME", "address": "42 avenue des Champs, 69000 Lyon" },
+  "items": [
+    { "label": "Consulting", "qty": 3, "price": 650 },
+    { "label": "Support plan", "qty": 1, "price": 199 }
+  ]
+}

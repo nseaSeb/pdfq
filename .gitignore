@@ -1,0 +1,6 @@
+/target
+prototypes/*/target
+prototypes/*/out.pdf
+*.pdf
+!tests/fixtures/**/*.pdf
+.DS_Store

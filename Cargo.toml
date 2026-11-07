@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli"]
+exclude = ["prototypes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+pdfq-core = { path = "crates/core" }
+# Typst is pinned exactly: document compatibility is part of the PDFQ contract.
+typst = "=0.15.1"
+typst-kit = { version = "=0.15.1", default-features = false, features = ["embedded-fonts", "scan-fonts"] }
+typst-layout = "=0.15.1"
+typst-pdf = "=0.15.1"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = "0.3"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
