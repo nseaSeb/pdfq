@@ -29,6 +29,18 @@ impl Fonts {
         fonts
     }
 
+    /// Loads every font into memory now instead of on first use. Workers call
+    /// this at startup so font data is part of their memory baseline and no job
+    /// pays for loading a font inside its own memory budget.
+    /// Returns the number of fonts that loaded.
+    pub fn preload(&self) -> usize {
+        let book = self.store.book();
+        (0..)
+            .take_while(|&i| book.info(i).is_some())
+            .filter(|&i| self.store.font(i).is_some())
+            .count()
+    }
+
     /// Number of font families.
     pub fn family_count(&self) -> usize {
         self.store.book().families().count()

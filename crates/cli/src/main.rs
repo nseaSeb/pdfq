@@ -1,6 +1,8 @@
 //! `pdfq-cli compile input.typ -o out.pdf`: compiles a document with the same
 //! core as the PDFQ server, without process isolation. For development only.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

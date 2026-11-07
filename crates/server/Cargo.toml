@@ -1,0 +1,20 @@
+[package]
+name = "pdfq-server"
+description = "PDFQ HTTP server and worker pool supervisor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pdfq-protocol = { workspace = true, features = ["tokio"] }
+async-channel.workspace = true
+libc.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

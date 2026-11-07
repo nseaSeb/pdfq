@@ -5,7 +5,9 @@ use typst::foundations::Datetime;
 use typst_layout::PagedDocument;
 use typst_pdf::{PdfOptions, PdfStandard, PdfStandards, Timestamp};
 
-use crate::diagnostics::{Diagnostic, Severity};
+use pdfq_protocol::{Diagnostic, Severity};
+
+use crate::diagnostics::resolve;
 use crate::world::PdfqWorld;
 
 /// Output settings of a compilation.
@@ -52,11 +54,7 @@ pub fn compile(world: &PdfqWorld, options: &CompileOptions) -> Result<Compiled, 
         .map_err(|e| CompileFailure::InvalidOptions(e.message().to_string()))?;
 
     let result = typst::compile::<PagedDocument>(world);
-    let mut warnings: Vec<_> = result
-        .warnings
-        .iter()
-        .map(|d| Diagnostic::resolve(world, d))
-        .collect();
+    let mut warnings: Vec<_> = result.warnings.iter().map(|d| resolve(world, d)).collect();
 
     let document = match result.output {
         Ok(document) => document,
@@ -64,10 +62,7 @@ pub fn compile(world: &PdfqWorld, options: &CompileOptions) -> Result<Compiled, 
             if let Some(spec) = world.denied_package() {
                 return Err(CompileFailure::PackageNotAllowed(spec));
             }
-            let mut all: Vec<_> = errors
-                .iter()
-                .map(|d| Diagnostic::resolve(world, d))
-                .collect();
+            let mut all: Vec<_> = errors.iter().map(|d| resolve(world, d)).collect();
             all.append(&mut warnings);
             return Err(CompileFailure::Diagnostics(all));
         }
@@ -93,10 +88,7 @@ pub fn compile(world: &PdfqWorld, options: &CompileOptions) -> Result<Compiled, 
         ..PdfOptions::default()
     };
     let pdf = typst_pdf::pdf(&document, &pdf_options).map_err(|errors| {
-        let mut all: Vec<_> = errors
-            .iter()
-            .map(|d| Diagnostic::resolve(world, d))
-            .collect();
+        let mut all: Vec<_> = errors.iter().map(|d| resolve(world, d)).collect();
         all.extend(warnings.iter().cloned());
         CompileFailure::Diagnostics(all)
     })?;

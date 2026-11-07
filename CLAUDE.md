@@ -11,11 +11,13 @@ HTTP service that compiles Typst documents to PDF, sync or async (webhook). Stat
 |---|---|---|
 | `crates/core` (`pdfq-core`) | done | Typst `World` (`PdfqWorld`), fonts, local packages + allowlist, compile, PDF export, diagnostics |
 | `crates/cli` (`pdfq-cli`) | done | `pdfq-cli compile in.typ -o out.pdf` — dev/debug, no isolation |
-| `crates/protocol` | planned | Worker frames: u8 tag + u32 LE length + postcard payload |
-| `crates/worker` | planned | Minimal binary, one job at a time over stdin/stdout |
-| `crates/server` (binary `pdfq`) | planned | axum + tokio, worker pool supervisor, bounded queue, async job store |
+| `crates/protocol` (`pdfq-protocol`) | done | `Job`/`WorkerMessage`/`JobError`/`Diagnostic`; frames = u32 LE length + postcard |
+| `crates/worker` (`pdfq-worker`) | done | One job at a time over stdin/stdout, per-job soft rlimits, OOM allocator (exit 3) |
+| `crates/server` (`pdfq-server`) | pool done, HTTP planned | `pool`: supervisor (spawn + hard rlimits, wall timeout + SIGKILL, classify death, recycle, bounded queue) |
 
-Security model: every compilation runs in a separate worker process with rlimits (see `prototypes/p2-isolate/NOTES.md`). The server never links Typst.
+Security model: every compilation runs in a separate worker process. The supervisor sets hard rlimits in `pre_exec` (`crates/server/src/spawn.rs`); before each job the worker lowers its own soft `RLIMIT_AS` (current VmSize + budget) and `RLIMIT_CPU` (used + budget), because both are cumulative over the process life (`crates/worker/src/limits.rs`). Death is classified in `pool::classify`: exit 3 = `memory_limit`, SIGXCPU = `timeout`/cpu, our SIGKILL after the wall timeout = `timeout`/wall. The server never links Typst.
+
+Hostile corpus: `tests/fixtures/hostile/`, exercised by `crates/server/tests/hostile.rs` (the test builds `pdfq-worker` itself, or uses `PDFQ_WORKER_BIN`).
 
 ## Core rules
 
@@ -32,6 +34,7 @@ Security model: every compilation runs in a separate worker process with rlimits
 - `PdfStandard` is parsed through its serde names (`a-3b`, `ua-1`, …).
 - No custom XMP in typst-pdf/krilla: Factur-X needs post-processing of the XMP stream.
 - Typst memoizes closure calls and rejects `while true`: hostile fixtures must defeat both.
+- Protocol: never use `skip_serializing_if` on protocol types; postcard is positional and skipped fields corrupt frames.
 
 ## Commands
 
@@ -42,11 +45,13 @@ cargo test
 cargo run -p pdfq-cli -- compile examples/invoice/main.typ --data examples/invoice/data.json -o out.pdf
 ```
 
-rlimits (`RLIMIT_AS` in particular) are not enforced on macOS: isolation tests must run on Linux (CI or Docker, see `prototypes/p2-isolate/run-linux.sh`).
+`PR_SET_PDEATHSIG` fires when the *spawning thread* exits: spawn workers from Tokio worker threads, never from `spawn_blocking`.
+
+`RLIMIT_AS` is not enforced on macOS, so memory cases of the hostile corpus only run on Linux: `./scripts/test-linux.sh` (Docker). `pre_exec` code must stay async-signal-safe (no allocation, no logging).
 
 ## Conventions
 
 - One commit per milestone; stop for review after each.
 - Stateless: no database. Async jobs live in memory and are lost on restart (documented).
 - Every limit has a default and a `PDFQ_*` env var / CLI flag (clap).
-- `unsafe` is forbidden workspace-wide; only the worker/server spawn code may opt out, with a comment.
+- `unsafe` is denied workspace-wide (`forbid` in core, cli, protocol). Only `worker` (allocator, rlimits) and `server/src/spawn.rs` opt out, with `SAFETY` comments.
