@@ -2,6 +2,7 @@
 //! sizes, file counts, zip archives and image headers. The worker's own limits
 //! remain the last line of defense.
 
+use pdfq_protocol::RESERVED_DIR;
 use std::collections::HashSet;
 use std::io::{Cursor, Read};
 
@@ -45,6 +46,25 @@ impl Files {
 
     pub fn into_vec(self) -> Vec<File> {
         self.files
+    }
+
+    /// Moves the files out, leaving an empty set with the same limits.
+    pub fn take(&mut self) -> Files {
+        std::mem::replace(self, Files::new(self.limits))
+    }
+
+    /// Caps the bytes this set may still accept (shared request budget).
+    pub fn limit_remaining(&mut self, budget: u64) {
+        self.limits.max_upload_size = self.total.saturating_add(budget);
+    }
+
+    /// Bytes accepted so far.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
     }
 
     /// Bytes still allowed for the whole request.
@@ -141,6 +161,11 @@ pub fn normalize_path(path: &str) -> Result<String, ApiError> {
     }
     if segments.is_empty() {
         return Err(invalid());
+    }
+    if segments[0] == RESERVED_DIR {
+        return Err(ApiError::invalid(format!(
+            "invalid file path `{path}`: `{RESERVED_DIR}/` is reserved"
+        )));
     }
     Ok(segments.join("/"))
 }

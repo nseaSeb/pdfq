@@ -26,6 +26,8 @@ Hostile corpus: `tests/fixtures/hostile/`, exercised by `crates/server/tests/hos
 - Typst crates are pinned with `=` in the root `Cargo.toml`. Never trust memory for the Typst API: read the sources in `~/.cargo/registry/src/*/typst-*-<version>/` before changing World/compile code.
 - `PdfqWorld` reads only: project files (`Project`: disk root confined via canonicalize + prefix check, overlaid by in-memory files; disk wins) and `@preview` packages from local dirs (`Packages`). No network, ever.
 - `sys.inputs` values are strings; JSON data goes in `sys.inputs.data`.
+- Attachments: with any attachment, `PdfqWorld` compiles a synthetic `/.pdfq/main.typ` that `#include`s the user's entrypoint, then calls `#std.pdf.attach(...)` with data from the reserved `/.pdfq/attachments/<i>` (checked before the project). The document's show rules or comments cannot reach the attach calls. Names are passed as absolute paths, because the name in the PDF is the root-relative resolved path.
+- Factur-X: `core/src/facturx.rs` rewrites krilla's metadata object in place and shifts the xref table. It assumes a classic xref table with one subsection and an unfiltered XMP stream, and fails (`worker_crashed`) rather than returning a PDF without the metadata. `core/tests/attach.rs` validates with veraPDF when installed (`PDFQ_REQUIRE_VERAPDF=1` makes it mandatory).
 - Hints mentioning CLI flags (`--root`, `--package-path`) are filtered out of diagnostics.
 
 ## Typst 0.15.1 gotchas

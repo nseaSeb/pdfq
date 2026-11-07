@@ -6,7 +6,10 @@ use std::path::Path;
 use axum::extract::Multipart;
 use axum::extract::multipart::Field;
 use axum::http::StatusCode;
-use pdfq_protocol::{Date, Diagnostic, ErrorKind, Job, JobError, JobOptions, JobSource, Severity};
+use pdfq_protocol::{
+    Attachment, Date, Diagnostic, ErrorKind, FACTURX_FILENAME, FacturxProfile, Job, JobError,
+    JobOptions, JobSource, Relationship, Severity, is_valid_attachment_name, is_valid_mime_type,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -15,8 +18,8 @@ use crate::error::ApiError;
 use crate::schema::SchemaCache;
 use crate::validate::{Files, Limits, is_valid_template_name, normalize_path};
 
-/// Fields described in the spec but not implemented yet.
-const NOT_YET: &[&str] = &["attachment", "attach_data", "facturx", "facturx_profile"];
+/// Name of the attachment made from `data` with `attach_data`.
+const DATA_FILENAME: &str = "data.json";
 
 /// JSON body, for template mode without uploads.
 #[derive(Debug, Deserialize)]
@@ -35,6 +38,16 @@ pub struct JsonRequest {
     pub strict: bool,
     #[serde(default)]
     pub callback_url: Option<String>,
+    #[serde(default)]
+    pub attach_data: bool,
+    /// Factur-X CII XML.
+    #[serde(default)]
+    pub facturx: Option<String>,
+    #[serde(default)]
+    pub facturx_profile: Option<String>,
+    /// Keyed by attachment name (`data.json`, `factur-x.xml`).
+    #[serde(default)]
+    pub attachment_relationship: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -65,6 +78,13 @@ struct Builder<'a> {
     pdf_standards: Vec<String>,
     date: Option<Date>,
     strict: bool,
+    /// Uploaded attachments (named by their filename) and their MIME types.
+    attachments: Files,
+    mime_types: BTreeMap<String, String>,
+    relationships: BTreeMap<String, Relationship>,
+    attach_data: Option<bool>,
+    facturx: Option<Vec<u8>>,
+    facturx_profile: Option<String>,
 }
 
 impl<'a> Builder<'a> {
@@ -83,6 +103,12 @@ impl<'a> Builder<'a> {
             template: None,
             files: Files::new(limits),
             assets: Files::new(limits),
+            attachments: Files::new(limits),
+            mime_types: BTreeMap::new(),
+            relationships: BTreeMap::new(),
+            attach_data: None,
+            facturx: None,
+            facturx_profile: None,
             archive: false,
             file_parts: false,
             entrypoint: None,
@@ -155,6 +181,200 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    /// Bytes still allowed for the whole request, all uploads together.
+    fn remaining(&self) -> u64 {
+        self.config.max_upload_size.saturating_sub(self.uploaded())
+    }
+
+    /// Uploaded bytes so far (files, assets, attachments, Factur-X XML).
+    fn uploaded(&self) -> u64 {
+        let facturx = self.facturx.as_ref().map_or(0, |x| x.len() as u64);
+        self.files.total() + self.assets.total() + self.attachments.total() + facturx
+    }
+
+    fn add_attachment(
+        &mut self,
+        name: &str,
+        content_type: Option<&str>,
+        data: Vec<u8>,
+    ) -> Result<(), ApiError> {
+        if !is_valid_attachment_name(name) {
+            return Err(ApiError::invalid(format!(
+                "invalid attachment name `{name}`: use 1 to 128 letters, digits, `.`, `_`, `-` \
+                 or spaces, not starting with `.`"
+            )));
+        }
+        if name == DATA_FILENAME || name == FACTURX_FILENAME {
+            return Err(ApiError::invalid(format!(
+                "`{name}` is reserved: use `attach_data` or `facturx`"
+            )));
+        }
+        let mime = mime_type(name, content_type)?;
+        self.attachments.add(name, data)?;
+        self.mime_types.insert(name.to_string(), mime);
+        Ok(())
+    }
+
+    fn set_relationship(&mut self, name: &str, value: &str) -> Result<(), ApiError> {
+        let relationship = Relationship::parse(value).ok_or_else(|| {
+            ApiError::invalid(format!(
+                "invalid relationship `{value}`: use source, data, alternative, supplement \
+                 or unspecified"
+            ))
+        })?;
+        if self
+            .relationships
+            .insert(name.to_string(), relationship)
+            .is_some()
+        {
+            return Err(ApiError::invalid(format!(
+                "`attachment_relationship.{name}` given more than once"
+            )));
+        }
+        Ok(())
+    }
+
+    fn set_attach_data(&mut self, value: bool) -> Result<(), ApiError> {
+        if self.attach_data.replace(value).is_some() {
+            return Err(ApiError::invalid("`attach_data` given more than once"));
+        }
+        Ok(())
+    }
+
+    fn set_facturx(&mut self, xml: Vec<u8>) -> Result<(), ApiError> {
+        if self.facturx.is_some() {
+            return Err(ApiError::invalid("`facturx` given more than once"));
+        }
+        if xml.len() as u64 > self.config.max_file_size {
+            return Err(ApiError::too_large(format!(
+                "`facturx` exceeds {} bytes",
+                self.config.max_file_size
+            )));
+        }
+        if xml.len() as u64 > self.remaining() {
+            return Err(ApiError::too_large(format!(
+                "the request exceeds {} bytes",
+                self.config.max_upload_size
+            )));
+        }
+        // A sanity check, not a schema validation.
+        let text =
+            std::str::from_utf8(&xml).map_err(|_| ApiError::invalid("`facturx` is not UTF-8"))?;
+        if !text.contains("CrossIndustryInvoice") {
+            return Err(ApiError::invalid(
+                "`facturx` is not a CII invoice (no CrossIndustryInvoice element)",
+            ));
+        }
+        self.facturx = Some(xml);
+        Ok(())
+    }
+
+    /// The attachments, the Factur-X profile and the final PDF standards.
+    fn attachments(&mut self) -> Result<(Vec<Attachment>, Option<FacturxProfile>), ApiError> {
+        let count = self.files.len()
+            + self.assets.len()
+            + self.attachments.len()
+            + usize::from(self.facturx.is_some());
+        if count > self.config.max_files {
+            return Err(ApiError::too_large(format!(
+                "too many files (limit {})",
+                self.config.max_files
+            )));
+        }
+        if self.uploaded() > self.config.max_upload_size {
+            return Err(ApiError::too_large(format!(
+                "the request exceeds {} bytes",
+                self.config.max_upload_size
+            )));
+        }
+        let files = self.attachments.take().into_vec();
+        let mut relationships = std::mem::take(&mut self.relationships);
+        let mut attachments: Vec<Attachment> = files
+            .into_iter()
+            .map(|f| Attachment {
+                relationship: relationships
+                    .remove(&f.path)
+                    .unwrap_or(Relationship::Supplement),
+                mime_type: self.mime_types.remove(&f.path).unwrap_or_default(),
+                description: f.path.clone(),
+                name: f.path,
+                data: f.data,
+            })
+            .collect();
+
+        if self.attach_data == Some(true) {
+            let Some((json, _)) = &self.data else {
+                return Err(ApiError::invalid("`attach_data` requires `data`"));
+            };
+            attachments.push(Attachment {
+                name: DATA_FILENAME.into(),
+                data: json.clone().into_bytes(),
+                mime_type: "application/json".into(),
+                relationship: relationships
+                    .remove(DATA_FILENAME)
+                    .unwrap_or(Relationship::Source),
+                description: "Input data of the document".into(),
+            });
+        }
+
+        let profile = match (self.facturx.take(), self.facturx_profile.take()) {
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(ApiError::invalid("`facturx` requires `facturx_profile`"));
+            }
+            (None, Some(_)) => {
+                return Err(ApiError::invalid("`facturx_profile` requires `facturx`"));
+            }
+            (Some(xml), Some(profile)) => {
+                let profile = FacturxProfile::parse(&profile).ok_or_else(|| {
+                    ApiError::invalid(format!(
+                        "invalid facturx_profile `{profile}`: use minimum, basic-wl, basic, \
+                         en16931 or extended"
+                    ))
+                })?;
+                let relationship = relationships
+                    .remove(FACTURX_FILENAME)
+                    .unwrap_or(Relationship::Data);
+                if !profile.allows_relationship(relationship) {
+                    return Err(ApiError::invalid(
+                        "invalid relationship for the Factur-X XML: data, source or alternative \
+                         (only data for minimum and basic-wl)",
+                    ));
+                }
+                // Factur-X is PDF/A-3: add it, and refuse any other PDF/A part.
+                let archival: Vec<_> = self
+                    .pdf_standards
+                    .iter()
+                    .filter(|s| s.starts_with("a-"))
+                    .collect();
+                if archival
+                    .iter()
+                    .any(|s| !matches!(s.as_str(), "a-3a" | "a-3b" | "a-3u"))
+                {
+                    return Err(ApiError::invalid("Factur-X requires PDF/A-3 (`a-3b`)"));
+                }
+                if archival.is_empty() {
+                    self.pdf_standards.push("a-3b".into());
+                }
+                attachments.push(Attachment {
+                    name: FACTURX_FILENAME.into(),
+                    data: xml,
+                    mime_type: "text/xml".into(),
+                    relationship,
+                    description: "Factur-X invoice".into(),
+                });
+                Some(profile)
+            }
+        };
+
+        if let Some(name) = relationships.keys().next() {
+            return Err(ApiError::invalid(format!(
+                "`attachment_relationship.{name}` names no attachment"
+            )));
+        }
+        Ok((attachments, profile))
+    }
+
     fn set_once(slot: &mut Option<String>, name: &str, value: String) -> Result<(), ApiError> {
         if slot.replace(value).is_some() {
             return Err(ApiError::invalid(format!("`{name}` given more than once")));
@@ -164,6 +384,7 @@ impl<'a> Builder<'a> {
 
     fn finish(mut self) -> Result<Parsed, ApiError> {
         let callback_url = self.callback_url.take();
+        let (attachments, facturx) = self.attachments()?;
         let sources = [self.template.is_some(), self.file_parts, self.archive];
         match sources.iter().filter(|&&s| s).count() {
             0 => {
@@ -224,6 +445,8 @@ impl<'a> Builder<'a> {
                 pdf_standards: self.pdf_standards,
                 date: self.date,
                 strict: self.strict,
+                attachments,
+                facturx,
             },
         };
         Ok(Parsed { job, callback_url })
@@ -313,6 +536,41 @@ fn parse_date(value: &str) -> Result<Date, ApiError> {
     Ok(Date { year, month, day })
 }
 
+/// The MIME type of an attachment: the part's `Content-Type` (without
+/// parameters) unless absent or generic, else guessed from the extension.
+fn mime_type(name: &str, content_type: Option<&str>) -> Result<String, ApiError> {
+    if let Some(given) = content_type {
+        let given = given
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if !is_valid_mime_type(&given) {
+            return Err(ApiError::invalid(format!(
+                "invalid content type `{given}` for attachment `{name}`"
+            )));
+        }
+        if given != "application/octet-stream" {
+            return Ok(given);
+        }
+    }
+    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    let guessed = match extension.as_deref() {
+        Some("xml") => "text/xml",
+        Some("json") => "application/json",
+        Some("csv") => "text/csv",
+        Some("txt") => "text/plain",
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("zip") => "application/zip",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream",
+    };
+    Ok(guessed.to_string())
+}
+
 fn parse_bool(name: &str, value: &str) -> Result<bool, ApiError> {
     match value {
         "true" | "1" => Ok(true),
@@ -361,9 +619,7 @@ pub async fn from_multipart(
                 let path = field.file_name().map(str::to_string).ok_or_else(|| {
                     ApiError::invalid(format!("`{name}` part without a filename"))
                 })?;
-                let cap = config
-                    .max_file_size
-                    .min(b.files.remaining().min(b.assets.remaining()));
+                let cap = config.max_file_size.min(b.remaining());
                 let data = read_capped(field, cap.max(1), &path).await?;
                 b.file_parts |= name == "file";
                 let target = if name == "file" {
@@ -377,17 +633,12 @@ pub async fn from_multipart(
                 if b.archive {
                     return Err(ApiError::invalid("`archive` given more than once"));
                 }
-                let data = read_capped(field, config.max_upload_size, "archive").await?;
+                let budget = b.remaining();
+                let data = read_capped(field, budget.max(1), "archive").await?;
                 b.archive = true;
-                let mut files = std::mem::replace(
-                    &mut b.files,
-                    Files::new(Limits {
-                        max_file_size: 0,
-                        max_upload_size: 0,
-                        max_files: 0,
-                        max_image_pixels: 0,
-                    }),
-                );
+                // Extraction shares the request budget with the other uploads.
+                let mut files = b.files.take();
+                files.limit_remaining(budget);
                 // Zip extraction is CPU-bound: keep it off the async runtime.
                 files = tokio::task::spawn_blocking(move || files.add_zip(&data).map(|()| files))
                     .await
@@ -422,10 +673,32 @@ pub async fn from_multipart(
                 let value = read_text(field, text_cap, &name).await?;
                 b.add_input(&name["input.".len()..], value)?;
             }
-            _ if NOT_YET.contains(&name.as_str())
-                || name.starts_with("attachment_relationship.") =>
-            {
-                return Err(ApiError::invalid(format!("`{name}` is not supported yet")));
+            "attachment" => {
+                let filename = field
+                    .file_name()
+                    .map(str::to_string)
+                    .ok_or_else(|| ApiError::invalid("`attachment` part without a filename"))?;
+                let content_type = field.content_type().map(str::to_string);
+                let cap = config.max_file_size.min(b.remaining());
+                let data = read_capped(field, cap.max(1), &filename).await?;
+                b.add_attachment(&filename, content_type.as_deref(), data)?;
+            }
+            _ if name.starts_with("attachment_relationship.") => {
+                let value = read_text(field, 32, &name).await?;
+                b.set_relationship(&name["attachment_relationship.".len()..], value.trim())?;
+            }
+            "attach_data" => b.set_attach_data(parse_bool(
+                "attach_data",
+                read_text(field, 8, &name).await?.trim(),
+            )?)?,
+            "facturx" => {
+                let cap = config.max_file_size.min(b.remaining());
+                let xml = read_capped(field, cap.max(1), "facturx").await?;
+                b.set_facturx(xml)?;
+            }
+            "facturx_profile" => {
+                let value = read_text(field, 32, &name).await?;
+                Builder::set_once(&mut b.facturx_profile, "facturx_profile", value)?;
             }
             "callback_url" => {
                 let value = read_text(field, crate::webhook::MAX_URL_LEN as u64, &name).await?;
@@ -461,5 +734,13 @@ pub fn from_json(
     }
     b.strict = body.strict;
     b.callback_url = body.callback_url;
+    b.attach_data = Some(body.attach_data);
+    if let Some(xml) = body.facturx {
+        b.set_facturx(xml.into_bytes())?;
+    }
+    b.facturx_profile = body.facturx_profile;
+    for (name, value) in &body.attachment_relationship {
+        b.set_relationship(name, value)?;
+    }
     b.finish()
 }

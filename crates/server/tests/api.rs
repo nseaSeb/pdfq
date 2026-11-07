@@ -442,3 +442,151 @@ async fn wait_ready(app: &Router) {
     }
     panic!("never ready");
 }
+
+fn contains(haystack: &[u8], needle: &str) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|w| w == needle.as_bytes())
+}
+
+const CII: &[u8] = b"<?xml version=\"1.0\"?><rsm:CrossIndustryInvoice/>";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn embeds_attachments_and_data() {
+    let (status, _, body) = send(
+        app(),
+        multipart(&[
+            ("file", Some("main.typ"), b"Hello"),
+            ("attachment", Some("lines.csv"), b"a,b\n1,2"),
+            ("attachment_relationship.lines.csv", None, b"data"),
+            ("data", None, br#"{"n":1}"#),
+            ("attach_data", None, b"true"),
+            ("pdf_standard", None, b"a-3b"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(contains(&body, "(lines.csv)"));
+    assert!(contains(&body, "(data.json)"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn writes_facturx() {
+    let (status, _, body) = send(
+        app(),
+        multipart(&[
+            ("file", Some("main.typ"), b"Invoice"),
+            ("facturx", Some("invoice.xml"), CII),
+            ("facturx_profile", None, b"en16931"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(contains(&body, "(factur-x.xml)"));
+    assert!(
+        contains(&body, "<pdfaid:part>3</pdfaid:part>"),
+        "a-3b is implied"
+    );
+    assert!(contains(
+        &body,
+        "<fx:ConformanceLevel>EN 16931</fx:ConformanceLevel>"
+    ));
+
+    // JSON template mode takes the XML as a string.
+    let (status, _, body) = send(
+        app(),
+        json_request(json!({
+            "template": "invoice",
+            "data": { "number": "F-1", "client": "ACME" },
+            "facturx": String::from_utf8_lossy(CII),
+            "facturx_profile": "minimum",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(contains(
+        &body,
+        "<fx:ConformanceLevel>MINIMUM</fx:ConformanceLevel>"
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_invalid_attachments() {
+    let main: Part = ("file", Some("main.typ"), b"x");
+    let profile: Part = ("facturx_profile", None, b"basic");
+    let facturx: Part = ("facturx", Some("f.xml"), CII);
+    let cases: Vec<Vec<Part>> = vec![
+        vec![main, ("attachment", Some(".hidden"), b"x")],
+        vec![main, ("attachment", Some("data.json"), b"{}")],
+        vec![
+            main,
+            ("attachment", Some("a.txt"), b"x"),
+            ("attachment", Some("a.txt"), b"y"),
+        ],
+        vec![main, ("attachment_relationship.nope.txt", None, b"data")],
+        vec![
+            main,
+            ("attachment", Some("a.txt"), b"x"),
+            ("attachment_relationship.a.txt", None, b"bogus"),
+        ],
+        vec![main, ("attach_data", None, b"true")],
+        vec![main, facturx],
+        vec![main, profile],
+        vec![main, facturx, ("facturx_profile", None, b"gold")],
+        vec![main, ("facturx", Some("f.xml"), b"<Invoice/>"), profile],
+        vec![main, facturx, profile, ("pdf_standard", None, b"a-2b")],
+        vec![
+            main,
+            facturx,
+            ("facturx_profile", None, b"minimum"),
+            ("attachment_relationship.factur-x.xml", None, b"alternative"),
+        ],
+        vec![main, ("file", Some(".pdfq/attachments/0"), b"x")],
+    ];
+    for parts in cases {
+        let names: Vec<_> = parts.iter().map(|p| p.0).collect();
+        let (status, _, body) = send(app(), multipart(&parts)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{names:?}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    // Standards that forbid attachments are reported by the compiler.
+    error(
+        app(),
+        multipart(&[
+            main,
+            ("attachment", Some("a.txt"), b"x"),
+            ("pdf_standard", None, b"a-2b"),
+        ]),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "compile_error",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archive_shares_the_upload_budget() {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("main.typ", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    std::io::Write::write_all(&mut zip, &[b'a'; 600]).unwrap();
+    let archive = zip.finish().unwrap().into_inner();
+    let app = app_with(Config {
+        max_upload_size: 1000,
+        ..config()
+    });
+    error(
+        app,
+        multipart(&[
+            ("attachment", Some("a.txt"), &[b'x'; 600]),
+            ("archive", Some("p.zip"), &archive),
+        ]),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    )
+    .await;
+}

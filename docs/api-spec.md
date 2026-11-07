@@ -35,17 +35,19 @@ Body: `multipart/form-data`, or `application/json` for template mode without upl
 | `data` | — | JSON document, exposed as `sys.inputs.data` (string) |
 | `input.<key>` | — | String exposed as `sys.inputs.<key>` |
 | `asset` (repeatable) | — | Template mode only: file mounted at `/assets/<filename>`. Cannot shadow template files |
-| `attachment` (repeatable) | — | File embedded in the PDF as-is (any format) |
-| `attachment_relationship.<filename>` | `supplement` | `source`, `data`, `alternative`, `supplement`, `unspecified` |
-| `attach_data` | `false` | Embed `data` as `data.json` (relationship `source`) |
-| `facturx` | — | Factur-X CII XML. Requires `facturx_profile` |
-| `facturx_profile` | — | `minimum`, `basic-wl`, `basic`, `en16931`, `extended`. Forces `pdf_standard=a-3b`, embeds `factur-x.xml`, writes the Factur-X XMP metadata |
-| `pdf_standard` | none | Values accepted by Typst 0.15.1 (`a-2b`, `a-3b`, `ua-1`, …). With attachments only `a-3*` (or none) is allowed |
+| `attachment` (repeatable) | — | File embedded in the PDF as-is (any format). The filename is its name in the PDF: 1–128 letters, digits, `.`, `_`, `-`, spaces, not starting with `.`. MIME type from the part's `Content-Type`, or guessed from the extension. Counts toward the file limits. Image headers are checked like any upload (the document can read attachments) |
+| `attachment_relationship.<filename>` | `supplement` | `source`, `data`, `alternative`, `supplement`, `unspecified` (PDF/A-3 `AFRelationship`). Also applies to `data.json` and `factur-x.xml` |
+| `attach_data` | `false` | Embed `data` as `data.json` (relationship `source`). Counted in `PDFQ_MAX_DATA_SIZE`, not in the file limits |
+| `facturx` | — | Factur-X CII XML (file part, or string in JSON). Requires `facturx_profile`. Counts toward the file limits. Only sanity-checked (a `CrossIndustryInvoice` document): not validated against the schema, and `facturx_profile` is not checked against the profile the XML declares |
+| `facturx_profile` | — | `minimum`, `basic-wl`, `basic`, `en16931`, `extended`. Embeds `factur-x.xml` (relationship `data` by default; `source` or `alternative` allowed except for `minimum` and `basic-wl`), adds `pdf_standard=a-3b` unless another `a-3*` is given (other PDF/A parts are refused), writes the Factur-X XMP metadata |
+| `pdf_standard` (repeatable) | none | Values accepted by Typst 0.15.1 (`a-2b`, `a-3b`, `ua-1`, …). Attachments are refused by PDF/A-1, PDF/A-2 and `a-4` (`compile_error`); `a-3*`, `a-4f` and `a-4e` allow them |
 | `date` | today (UTC) | `YYYY-MM-DD`: fixes `datetime.today()` and the PDF creation date (reproducible output) |
 | `strict` | `false` | Any Typst warning (e.g. unknown font) fails the job |
 | `callback_url` | — | `/jobs` only, see *Webhook* |
 
-Paths of uploaded files come from the part's filename. With curl: `-F 'file=@logo.png;filename=img/logo.png'`.
+Paths of uploaded files come from the part's filename. With curl: `-F 'file=@logo.png;filename=img/logo.png'`. The `.pdfq/` directory is reserved: uploads under it are refused.
+
+Factur-X with curl: `-F file=@main.typ -F facturx=@invoice.xml -F facturx_profile=en16931`.
 
 Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", default: "{}")))`.
 
@@ -87,6 +89,7 @@ Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", de
 | `not_finished` | 409 | `GET /jobs/{id}/pdf` before the job finished |
 | `queue_full` | 429 | Queue or job store full, `Retry-After` set |
 | `worker_crashed` | 500 | Unexpected worker failure |
+| `internal` | 500 | PDFQ bug (e.g. Factur-X metadata could not be written) |
 
 Document-caused failures are 4xx on purpose: they are deterministic and must not trigger automatic retries.
 

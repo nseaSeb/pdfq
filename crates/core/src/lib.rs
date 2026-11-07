@@ -7,6 +7,7 @@
 
 mod compile;
 mod diagnostics;
+mod facturx;
 mod fonts;
 mod packages;
 mod project;

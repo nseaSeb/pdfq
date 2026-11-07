@@ -1,7 +1,11 @@
+use pdfq_protocol::FacturxProfile;
 use serde::Deserialize;
 use serde::de::IntoDeserializer;
 use serde::de::value::Error as DeError;
 use typst::foundations::Datetime;
+use typst::foundations::NativeElement;
+use typst::introspection::Introspector;
+use typst::pdf::AttachElem;
 use typst_layout::PagedDocument;
 use typst_pdf::{PdfOptions, PdfStandard, PdfStandards, Timestamp};
 
@@ -19,6 +23,8 @@ pub struct CompileOptions {
     pub pdf_standards: Vec<PdfStandard>,
     /// Treat warnings as errors.
     pub strict: bool,
+    /// Write the Factur-X XMP metadata (requires a PDF/A-3 standard).
+    pub facturx: Option<FacturxProfile>,
 }
 
 /// A successful compilation.
@@ -40,6 +46,8 @@ pub enum CompileFailure {
     TooManyPages { pages: usize, max: usize },
     /// The options are invalid (e.g. incompatible PDF standards).
     InvalidOptions(String),
+    /// Post-processing of the exported PDF failed (a PDFQ bug, not the document's).
+    Internal(String),
 }
 
 /// Parses a PDF standard name as accepted by Typst (`a-2b`, `a-3b`, `ua-1`, `1.7`, …).
@@ -52,6 +60,15 @@ pub fn parse_pdf_standard(name: &str) -> Result<PdfStandard, String> {
 pub fn compile(world: &PdfqWorld, options: &CompileOptions) -> Result<Compiled, CompileFailure> {
     let standards = PdfStandards::new(&options.pdf_standards)
         .map_err(|e| CompileFailure::InvalidOptions(e.message().to_string()))?;
+    let pdf_a3 = options
+        .pdf_standards
+        .iter()
+        .any(|s| matches!(s, PdfStandard::A_3a | PdfStandard::A_3b | PdfStandard::A_3u));
+    if options.facturx.is_some() && !pdf_a3 {
+        return Err(CompileFailure::InvalidOptions(
+            "Factur-X requires a PDF/A-3 standard".into(),
+        ));
+    }
 
     let result = typst::compile::<PagedDocument>(world);
     let mut warnings: Vec<_> = result.warnings.iter().map(|d| resolve(world, d)).collect();
@@ -75,6 +92,34 @@ pub fn compile(world: &PdfqWorld, options: &CompileOptions) -> Result<Compiled, 
         return Err(CompileFailure::Diagnostics(warnings));
     }
 
+    // The wrapper keeps the attach calls out of the document's reach; this
+    // guard makes sure a PDF never ships without an expected attachment.
+    let attached: Vec<String> = document
+        .introspector()
+        .query(&AttachElem::ELEM.select())
+        .iter()
+        .filter_map(|e| {
+            e.to_packed::<AttachElem>()
+                .map(|a| a.path.derived.to_string())
+        })
+        .collect();
+    if let Some(missing) = world
+        .attachment_names()
+        .iter()
+        .find(|name| !attached.contains(name))
+    {
+        let mut all = vec![Diagnostic {
+            severity: Severity::Error,
+            message: format!("attachment `{missing}` is missing from the document"),
+            file: None,
+            line: None,
+            column: None,
+            hints: Vec::new(),
+        }];
+        all.append(&mut warnings);
+        return Err(CompileFailure::Diagnostics(all));
+    }
+
     let pages = document.pages().len();
     if let Some(max) = options.max_pages
         && pages > max
@@ -92,6 +137,11 @@ pub fn compile(world: &PdfqWorld, options: &CompileOptions) -> Result<Compiled, 
         all.extend(warnings.iter().cloned());
         CompileFailure::Diagnostics(all)
     })?;
+    let pdf = match options.facturx {
+        Some(profile) => crate::facturx::add_metadata(&pdf, profile)
+            .map_err(|e| CompileFailure::Internal(format!("Factur-X metadata: {e}")))?,
+        None => pdf,
+    };
     Ok(Compiled {
         pdf,
         pages,

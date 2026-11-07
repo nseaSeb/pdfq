@@ -45,7 +45,7 @@ pub fn status(kind: ErrorKind) -> StatusCode {
         | ErrorKind::Timeout
         | ErrorKind::MemoryLimit => StatusCode::UNPROCESSABLE_ENTITY,
         ErrorKind::QueueFull => StatusCode::TOO_MANY_REQUESTS,
-        ErrorKind::WorkerCrashed => StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorKind::WorkerCrashed | ErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

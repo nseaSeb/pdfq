@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The exact Typst version PDFQ is built against (pinned in the root `Cargo.toml`).
 pub const TYPST_VERSION: &str = "0.15.1";
@@ -89,6 +89,133 @@ pub struct JobOptions {
     pub pdf_standards: Vec<String>,
     pub date: Option<Date>,
     pub strict: bool,
+    /// Files embedded in the PDF (`pdf.attach`).
+    pub attachments: Vec<Attachment>,
+    /// Writes the Factur-X XMP metadata. The XML itself is in `attachments`
+    /// as [`FACTURX_FILENAME`], and the standards include PDF/A-3.
+    pub facturx: Option<FacturxProfile>,
+}
+
+/// Project directory reserved for PDFQ's own files (attachments): never read
+/// from the project, refused in uploads.
+pub const RESERVED_DIR: &str = ".pdfq";
+
+/// File name of the Factur-X XML inside the PDF (fixed by the standard).
+pub const FACTURX_FILENAME: &str = "factur-x.xml";
+
+/// A file embedded in the PDF.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// Name shown by PDF readers: 1 to 128 of `[A-Za-z0-9._ -]`, not starting with `.`.
+    pub name: String,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    /// `type/subtype`, see [`is_valid_mime_type`].
+    pub mime_type: String,
+    pub relationship: Relationship,
+    pub description: String,
+}
+
+/// The PDF/A-3 `AFRelationship` of an attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Relationship {
+    Source,
+    Data,
+    Alternative,
+    Supplement,
+    Unspecified,
+}
+
+impl Relationship {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "source" => Self::Source,
+            "data" => Self::Data,
+            "alternative" => Self::Alternative,
+            "supplement" => Self::Supplement,
+            "unspecified" => Self::Unspecified,
+            _ => return None,
+        })
+    }
+
+    /// The Typst `pdf.attach` value; `None` for unspecified.
+    pub fn typst_name(self) -> Option<&'static str> {
+        match self {
+            Self::Source => Some("source"),
+            Self::Data => Some("data"),
+            Self::Alternative => Some("alternative"),
+            Self::Supplement => Some("supplement"),
+            Self::Unspecified => None,
+        }
+    }
+}
+
+/// Factur-X profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FacturxProfile {
+    Minimum,
+    BasicWl,
+    Basic,
+    En16931,
+    Extended,
+}
+
+impl FacturxProfile {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "minimum" => Self::Minimum,
+            "basic-wl" => Self::BasicWl,
+            "basic" => Self::Basic,
+            "en16931" => Self::En16931,
+            "extended" => Self::Extended,
+            _ => return None,
+        })
+    }
+
+    /// The `fx:ConformanceLevel` value.
+    pub fn conformance_level(self) -> &'static str {
+        match self {
+            Self::Minimum => "MINIMUM",
+            Self::BasicWl => "BASIC WL",
+            Self::Basic => "BASIC",
+            Self::En16931 => "EN 16931",
+            Self::Extended => "EXTENDED",
+        }
+    }
+
+    /// MINIMUM and BASIC WL are not full invoices: their XML can only be `data`.
+    pub fn allows_relationship(self, relationship: Relationship) -> bool {
+        match self {
+            Self::Minimum | Self::BasicWl => relationship == Relationship::Data,
+            _ => matches!(
+                relationship,
+                Relationship::Data | Relationship::Source | Relationship::Alternative
+            ),
+        }
+    }
+}
+
+/// Attachment names: safe in PDF readers and file systems once extracted.
+pub fn is_valid_attachment_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b' '))
+}
+
+/// A `type/subtype` MIME type without parameters, as accepted by krilla
+/// (letters, digits, `-`, `+`, `.`).
+pub fn is_valid_mime_type(mime: &str) -> bool {
+    let token = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 127
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-+.".contains(&b))
+    };
+    matches!(mime.split_once('/'), Some((t, sub)) if token(t) && token(sub))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +296,8 @@ pub enum ErrorKind {
     WorkerCrashed,
     /// HTTP only: the async job has not finished yet.
     NotFinished,
+    /// A PDFQ bug (e.g. PDF post-processing failed). The worker stays alive.
+    Internal,
 }
 
 /// A Typst diagnostic resolved to a file, line and column (1-based).
@@ -294,6 +423,15 @@ mod tests {
             inputs: vec![("data".into(), "{}".into())],
             options: JobOptions {
                 max_pages: 10,
+                attachments: vec![Attachment {
+                    name: "factur-x.xml".into(),
+                    data: b"<x/>".to_vec(),
+                    mime_type: "text/xml".into(),
+                    relationship: Relationship::Unspecified,
+                    description: String::new(),
+                }],
+                facturx: Some(FacturxProfile::BasicWl),
+                strict: true,
                 ..JobOptions::default()
             },
         };
@@ -301,9 +439,31 @@ mod tests {
         write_frame(&mut buf, &job).unwrap();
         let back: Job = read_frame(&mut buf.as_slice(), 1024).unwrap().unwrap();
         assert_eq!(back.options.max_pages, 10);
+        assert_eq!(back.options.attachments, job.options.attachments);
+        assert_eq!(back.options.facturx, Some(FacturxProfile::BasicWl));
+        assert!(back.options.strict);
         assert!(
             matches!(back.source, JobSource::Files { ref files, .. } if files[0].data == b"Hello")
         );
+    }
+
+    #[test]
+    fn validates_attachment_names_and_mime_types() {
+        assert!(is_valid_attachment_name("factur-x.xml"));
+        assert!(is_valid_attachment_name("Report 2026.pdf"));
+        for bad in ["", ".hidden", "a/b", "a\"b", &"x".repeat(129)] {
+            assert!(!is_valid_attachment_name(bad), "{bad}");
+        }
+        assert!(is_valid_mime_type("application/vnd.ms-excel"));
+        for bad in [
+            "text",
+            "text/",
+            "text/plain; charset=utf-8",
+            "a/b/c",
+            "application/x_foo",
+        ] {
+            assert!(!is_valid_mime_type(bad), "{bad}");
+        }
     }
 
     #[test]

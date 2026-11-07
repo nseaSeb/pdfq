@@ -192,7 +192,7 @@ fn try_execute(
         }
     };
 
-    let options = job.options;
+    let mut options = job.options;
     let date = match options.date {
         Some(d) => Some(
             Datetime::from_ymd(d.year, d.month, d.day).ok_or_else(|| invalid("invalid date"))?,
@@ -204,6 +204,7 @@ fn try_execute(
         inputs: job.inputs,
         date,
         max_file_size: limit(options.max_file_size).unwrap_or(u64::MAX),
+        attachments: std::mem::take(&mut options.attachments),
     };
     let world = PdfqWorld::new(project, fonts, packages, world_options)
         .map_err(|_| invalid(format!("entrypoint `{entrypoint}` not found")))?;
@@ -218,6 +219,7 @@ fn try_execute(
         max_pages: limit(u64::from(options.max_pages)).map(|n| n as usize),
         pdf_standards,
         strict: options.strict,
+        facturx: options.facturx,
     };
 
     let compiled = compile(&world, &compile_options).map_err(|failure| match failure {
@@ -234,6 +236,7 @@ fn try_execute(
             format!("document has {pages} pages, the limit is {max}"),
         ),
         CompileFailure::InvalidOptions(message) => invalid(message),
+        CompileFailure::Internal(message) => JobError::new(ErrorKind::Internal, message),
     })?;
 
     if options.max_output_size > 0 && compiled.pdf.len() as u64 > options.max_output_size {

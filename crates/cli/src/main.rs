@@ -135,6 +135,7 @@ fn run(args: CompileArgs) -> anyhow::Result<ExitCode> {
         inputs,
         date: args.date,
         max_file_size: args.max_file_size,
+        ..WorldOptions::default()
     };
     let world = PdfqWorld::new(project, &fonts, &packages, options)?;
 
@@ -142,6 +143,7 @@ fn run(args: CompileArgs) -> anyhow::Result<ExitCode> {
         max_pages: Some(args.max_pages),
         pdf_standards,
         strict: args.strict,
+        ..CompileOptions::default()
     };
     match compile(&world, &options) {
         Ok(compiled) => {
@@ -164,6 +166,7 @@ fn run(args: CompileArgs) -> anyhow::Result<ExitCode> {
             bail!("too many pages: {pages} > {max}")
         }
         Err(CompileFailure::InvalidOptions(msg)) => bail!("invalid options: {msg}"),
+        Err(CompileFailure::Internal(msg)) => bail!("internal error: {msg}"),
     }
 }
 
