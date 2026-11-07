@@ -37,6 +37,9 @@ pub struct Config {
     /// Memory per job, above the worker baseline.
     #[arg(long, env = "PDFQ_MEMORY_LIMIT", default_value = "512MiB", value_parser = parse_size)]
     pub memory_limit: u64,
+    /// Open file descriptors per worker process (OS hardening).
+    #[arg(long, env = "PDFQ_WORKER_OPEN_FILES", default_value_t = 64)]
+    pub worker_open_files: u64,
 
     /// Maximum size of each file (after unzip).
     #[arg(long, env = "PDFQ_MAX_FILE_SIZE", default_value = "10MiB", value_parser = parse_size)]

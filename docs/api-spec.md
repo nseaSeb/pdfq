@@ -162,6 +162,7 @@ Every limit has a default and can be overridden with an environment variable (or
 | `PDFQ_CPU_TIMEOUT` | `20s` | CPU time per job |
 | `PDFQ_QUEUE_TIMEOUT` | `30s` | Time a job may wait for a free worker; older jobs fail with `queue_full` without running |
 | `PDFQ_MEMORY_LIMIT` | `512MiB` | Memory per job, above the worker baseline |
+| `PDFQ_WORKER_OPEN_FILES` | `64` | Open files per worker process |
 | `PDFQ_QUEUE_SIZE` | `64` | Queued jobs before `429`. At most `workers + queue size` requests are read at once; extra ones get `429` before their body is read |
 | `PDFQ_JOB_TTL` | `1h` | Async job retention after completion |
 | `PDFQ_MAX_JOBS` | `1000` | Async jobs kept in memory; the oldest finished ones are evicted first, then `POST /jobs` gets `429` |

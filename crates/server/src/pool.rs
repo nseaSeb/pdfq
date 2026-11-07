@@ -54,6 +54,8 @@ pub struct PoolConfig {
     pub memory_limit: u64,
     /// Largest PDF a worker may return.
     pub max_output_size: u64,
+    /// Open file descriptors per worker.
+    pub worker_open_files: u64,
 }
 
 impl Default for PoolConfig {
@@ -70,6 +72,7 @@ impl Default for PoolConfig {
             cpu_timeout: Duration::from_secs(20),
             memory_limit: 512 << 20,
             max_output_size: 100 << 20,
+            worker_open_files: 64,
         }
     }
 }
@@ -301,6 +304,7 @@ impl Worker {
             HardLimits {
                 address_space: config.memory_limit.saturating_add(4 << 30),
                 cpu_secs: lifetime_cpu,
+                open_files: config.worker_open_files,
             },
         );
 

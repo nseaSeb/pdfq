@@ -24,6 +24,7 @@ fn config() -> PoolConfig {
         cpu_timeout: Duration::from_secs(3),
         memory_limit: 256 << 20,
         max_output_size: 100 << 20,
+        ..PoolConfig::default()
     }
 }
 

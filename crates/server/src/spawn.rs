@@ -13,6 +13,8 @@ pub struct HardLimits {
     pub address_space: u64,
     /// CPU seconds over the whole life of the worker.
     pub cpu_secs: u64,
+    /// Open file descriptors (the worker reads files whole, then closes them).
+    pub open_files: u64,
 }
 
 /// Installs the hard limits and isolation settings, applied in the child
@@ -20,6 +22,7 @@ pub struct HardLimits {
 pub fn apply(cmd: &mut Command, limits: HardLimits) {
     let address_space = limits.address_space as libc::rlim_t;
     let cpu = limits.cpu_secs as libc::rlim_t;
+    let open_files = limits.open_files as libc::rlim_t;
     // SAFETY: the closure runs after fork in a multithreaded process, so it only
     // makes async-signal-safe calls (setsid, prctl, setrlimit) on values computed
     // beforehand. It does not allocate, lock or log.
@@ -48,7 +51,7 @@ pub fn apply(cmd: &mut Command, limits: HardLimits) {
             #[cfg(not(target_os = "linux"))]
             let _ = address_space;
             set(libc::RLIMIT_CPU, cpu)?;
-            set(libc::RLIMIT_NOFILE, 64)?;
+            set(libc::RLIMIT_NOFILE, open_files)?;
             set(libc::RLIMIT_FSIZE, 0)?;
             set(libc::RLIMIT_CORE, 0)?;
             Ok(())

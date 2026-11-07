@@ -50,6 +50,7 @@ pub fn pool_config(config: &Config, worker_bin: PathBuf) -> PoolConfig {
         queue_timeout: config.queue_timeout,
         cpu_timeout: config.cpu_timeout,
         memory_limit: config.memory_limit,
+        worker_open_files: config.worker_open_files,
         max_output_size: config.max_output_size,
     }
 }
