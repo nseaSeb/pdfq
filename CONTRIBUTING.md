@@ -69,4 +69,4 @@ Do not open a public issue. Use GitHub's private vulnerability reporting on this
 
 ## License
 
-By contributing, you agree that your contributions are dual-licensed under the MIT and Apache-2.0 licenses, like the rest of the project.
+By contributing, you agree that your contributions are licensed under the MIT license, like the rest of the project.

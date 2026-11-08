@@ -3,7 +3,7 @@
 HTTP service that compiles Typst documents to PDF, sync or async (webhook). Stateless, shipped as a Docker image, safe against untrusted documents. Think "Gotenberg for Typst".
 
 - API contract: `docs/api-spec.md` (source of truth for routes, fields, error kinds, limits).
-- License: MIT OR Apache-2.0. Code, comments, docs and commit messages in English.
+- License: MIT. Code, comments, docs and commit messages in English.
 
 ## Architecture (Cargo workspace)
 

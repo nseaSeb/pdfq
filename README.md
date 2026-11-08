@@ -175,4 +175,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, the checks and a map of th
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option. Typst and the bundled packages and fonts keep their own licenses.
+Licensed under the [MIT license](LICENSE). Typst and the bundled packages and fonts keep their own licenses.
