@@ -13,7 +13,7 @@ First version, built against Typst 0.15.1.
 - Async jobs: `POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/pdf`, kept in memory with a TTL and bounded by count and size.
 - Webhooks signed with HMAC-SHA256, retried with backoff, with SSRF protection (HTTPS only, public addresses only, checked again at connection time).
 - Attachments (`attachment`, `attach_data`) and Factur-X invoices (`facturx`, `facturx_profile`): PDF/A-3b with Factur-X XMP metadata.
-- Process isolation: one worker process per compilation slot with hard rlimits, per-job memory and CPU budgets, wall-clock timeout with `SIGKILL`, worker recycling. Typed errors (`timeout`, `memory_limit`, `too_many_pages`, …).
+- Process isolation: one worker process per compilation slot with hard rlimits, per-job memory and CPU budgets, wall-clock timeout with `SIGKILL`, worker recycling, server and workers non-dumpable on Linux. Typed errors (`timeout`, `memory_limit`, `too_many_pages`, …).
 - Input validation: sizes, file counts, zip bombs, image dimensions, paths, package allowlist.
 - `/health`, `/ready`, Prometheus `/metrics`.
 - Docker image: distroless, non-root, `HEALTHCHECK`, embedded fonts plus `/fonts`, preloaded `@preview` packages (configurable in `packages/packages.txt`) plus `/packages`, templates in `/templates`.

@@ -85,6 +85,20 @@ struct Args {
 }
 
 fn main() {
+    // `execve` resets the dumpable flag, so the supervisor cannot set it in
+    // `pre_exec`: do it before reading any job, so a compromised worker cannot
+    // read sibling workers' memory through `/proc` nor ptrace them.
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: prctl with integer arguments only; no memory is passed.
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+            eprintln!(
+                "pdfq-worker: cannot make the process non-dumpable: {}",
+                io::Error::last_os_error()
+            );
+            std::process::exit(1);
+        }
+    }
     let args = Args::parse();
     let handle = std::thread::Builder::new()
         .name("pdfq-worker".into())

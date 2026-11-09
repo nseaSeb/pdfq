@@ -17,6 +17,22 @@ pub struct HardLimits {
     pub open_files: u64,
 }
 
+/// Makes the current process non-dumpable (Linux), so that processes running as
+/// the same user, such as a compromised worker, cannot read its memory or
+/// environment through `/proc` nor ptrace it. No-op on other systems.
+///
+/// `execve` resets the flag, so workers must set it themselves.
+pub fn set_non_dumpable() -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: prctl with integer arguments only; no memory is passed.
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Installs the hard limits and isolation settings, applied in the child
 /// between `fork` and `exec`.
 pub fn apply(cmd: &mut Command, limits: HardLimits) {

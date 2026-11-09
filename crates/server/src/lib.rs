@@ -13,6 +13,8 @@ mod spawn;
 pub mod validate;
 pub mod webhook;
 
+pub use spawn::set_non_dumpable;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;

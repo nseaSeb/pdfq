@@ -134,7 +134,7 @@ Input, output, job store and webhook limits are listed in the [API spec](docs/ap
 
 ## Security model
 
-- The HTTP server never runs Typst. Each compilation goes to a `pdfq-worker` process started with hard rlimits: address space, CPU, open files (`PDFQ_WORKER_OPEN_FILES`, 64), file size 0 (files cannot grow), no core dumps. On Linux it also gets `no_new_privs` and is killed when the server dies. Before each job the worker lowers its own memory and CPU limits to the per-job budget.
+- The HTTP server never runs Typst. Each compilation goes to a `pdfq-worker` process started with hard rlimits: address space, CPU, open files (`PDFQ_WORKER_OPEN_FILES`, 64), file size 0 (files cannot grow), no core dumps. On Linux it also gets `no_new_privs`, is non-dumpable and is killed when the server dies. Before each job the worker lowers its own memory and CPU limits to the per-job budget.
 - A job over its wall-clock time is killed with `SIGKILL` and its worker replaced; workers are also recycled after `PDFQ_JOBS_PER_WORKER` jobs.
 - Documents only see their own files, mounted templates and installed packages: no network, no `..` or symlink escape, no other file on disk.
 - Inputs are checked before compiling: sizes, file counts, zip bombs (real decompressed size), image dimensions from headers, page count, output size.
@@ -164,11 +164,11 @@ Covered:
 - Documents that try to read files outside their project, or reach the network, through Typst. The compiler only sees what `PdfqWorld` serves.
 - Zip bombs and image bombs.
 - Hostile webhook targets (SSRF guard: private addresses refused, no redirects, no proxy).
+- On Linux, the server and workers are non-dumpable: a worker cannot read the memory or environment of the server or of other workers through `/proc`, nor ptrace them. Workers also start with an empty environment, so they do not inherit `PDFQ_WEBHOOK_SECRET`.
 
 Not covered:
 
 - A memory-safety or logic bug in Typst or its dependencies that gives code execution in the worker. The worker runs as the same user as the server. Network and file confinement come from PDFQ's code, not from the kernel (no seccomp, no namespaces).
-- Workers start with an empty environment, so they do not inherit `PDFQ_WEBHOOK_SECRET`. But code running in a worker as the same user may still be able to read the server's environment through `/proc`.
 - A worker serves up to `PDFQ_JOBS_PER_WORKER` jobs (100 by default), so a compromised worker could see later documents. Set `PDFQ_JOBS_PER_WORKER=1` to start a fresh process per job, at a throughput cost.
 
 Mitigation: run the hardened container shown above, without network access it does not need, and on its own (no other secrets or services in the same container). A seccomp filter in the worker is a possible future step.
