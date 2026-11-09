@@ -40,6 +40,20 @@ docker build -t pdfq:dev . && ./scripts/smoke-image.sh pdfq:dev
 
 If you touch `.github/workflows/`: `docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667`.
 
+## Releasing
+
+1. Bump `version` in `Cargo.toml` (`[workspace.package]`) and move `[Unreleased]` in `CHANGELOG.md` to the new version (with its compare link). Commit.
+2. Tag and push the tag:
+
+   ```sh
+   git tag -a vX.Y.Z -m "PDFQ X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+The release workflow (`.github/workflows/release.yml`) checks that the tag matches the workspace version, builds the image natively on amd64 and arm64, runs `scripts/smoke-image.sh` on each, pushes them by digest, merges the multi-arch manifest as `ghcr.io/nseaseb/pdfq:<version>-typst<typst-version>`, `:<version>` and `:latest` (only for versions without `-`), and attests build provenance. To test it without publishing: `gh workflow run release.yml -f push=false`.
+
+The first time, the GHCR package may be created private: make it public in the package settings ("Package settings", "Change visibility").
+
 ## Code map
 
 | Crate | Role |

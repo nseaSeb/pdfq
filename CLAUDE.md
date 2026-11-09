@@ -63,7 +63,8 @@ docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5
 
 - Toolchain, Rust image and distroless image are pinned together (`rust-toolchain.toml`, `Dockerfile` digests); bump them together.
 - Preloaded packages: `packages/packages.txt` (name, version, tarball sha256, dependencies included) and `packages/smoke.typ` (imports each one).
-- CI: lint, tests on amd64/arm64/macOS (veraPDF through `scripts/verapdf-docker.sh`, required on Linux), image build + smoke on both arches. No image is published: CI only builds the image and runs `scripts/smoke-image.sh` against it.
+- CI: lint, tests on amd64/arm64/macOS (veraPDF through `scripts/verapdf-docker.sh`, required on Linux), image build + smoke on both arches. CI only builds the image and smoke-tests it; publishing is `.github/workflows/release.yml`.
+- Release: bump `version` in `Cargo.toml` and `CHANGELOG.md`, commit, then `git tag -a vX.Y.Z -m ... && git push origin vX.Y.Z`. The workflow checks the tag against the workspace version, builds natively per arch (amd64, arm64), smoke-tests, pushes by digest, merges the manifest into `ghcr.io/nseaseb/pdfq:<version>-typst<typst>`, `:<version>`, `:latest` (no `-` in version) and attests provenance. `workflow_dispatch` with `push=false` (default) is a dry run.
 
 `PR_SET_PDEATHSIG` fires when the *spawning thread* exits: spawn workers from Tokio worker threads, never from `spawn_blocking`.
 

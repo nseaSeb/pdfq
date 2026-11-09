@@ -1,0 +1,190 @@
+name: Release
+
+# Multi-arch images on ghcr.io. A `vX.Y.Z` tag builds, smoke-tests and pushes;
+# a manual run builds and smoke-tests only, unless `push` is set (on a tag ref).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Push the image to ghcr.io (manual runs must then target a v* tag)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/nseaseb/pdfq
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      typst: ${{ steps.meta.outputs.typst }}
+      latest: ${{ steps.meta.outputs.latest }}
+      push: ${{ steps.meta.outputs.push }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read versions and check the tag
+        id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PUSH: ${{ inputs.push }}
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          typst=$(sed -n 's/^typst = "=\(.*\)"$/\1/p' Cargo.toml)
+          [[ -n "$version" ]] || { echo "::error::workspace version not found in Cargo.toml"; exit 1; }
+          [[ -n "$typst" ]] || { echo "::error::typst is not pinned with = in Cargo.toml"; exit 1; }
+          push=false
+          if [[ "$EVENT" == push || "$INPUT_PUSH" == true ]]; then push=true; fi
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" == "v$version" ]] \
+              || { echo "::error::tag $REF_NAME does not match the workspace version $version"; exit 1; }
+          elif [[ "$push" == true ]]; then
+            echo "::error::pushing requires a v$version tag ref"; exit 1
+          fi
+          latest=true
+          [[ "$version" == *-* ]] && latest=false
+          {
+            echo "version=$version"
+            echo "typst=$typst"
+            echo "latest=$latest"
+            echo "push=$push"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version typst=$typst latest=$latest push=$push"
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: OCI labels
+        id: labels
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/nseaSeb/pdfq
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ needs.check.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build (local)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: pdfq:release
+          labels: ${{ steps.labels.outputs.labels }}
+          # The CI cache of the same runner is reusable (default-branch caches are readable from tags).
+          cache-from: |
+            type=gha,scope=release-${{ matrix.arch }}
+            type=gha,scope=${{ matrix.runner }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+      - run: ./scripts/smoke-image.sh pdfq:release
+      - name: Log in to ghcr.io
+        if: needs.check.outputs.push == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push by digest
+        id: push
+        if: needs.check.outputs.push == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.labels.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+      - name: Export digest
+        if: needs.check.outputs.push == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - name: Upload digest
+        if: needs.check.outputs.push == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [check, build]
+    if: needs.check.outputs.push == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          TYPST: ${{ needs.check.outputs.typst }}
+          LATEST: ${{ needs.check.outputs.latest }}
+        run: |
+          tags=(-t "$IMAGE:$VERSION-typst$TYPST" -t "$IMAGE:$VERSION")
+          if [[ "$LATEST" == true ]]; then tags+=(-t "$IMAGE:latest"); fi
+          sources=()
+          for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
+          [[ ${#sources[@]} == 2 ]] || { echo "::error::expected 2 digests, got ${#sources[@]}"; exit 1; }
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+      - name: Inspect
+        id: inspect
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          TYPST: ${{ needs.check.outputs.typst }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE:$VERSION-typst$TYPST"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION-typst$TYPST" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ "$digest" == sha256:* ]] || { echo "::error::no manifest digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.inspect.outputs.digest }}
+          push-to-registry: true

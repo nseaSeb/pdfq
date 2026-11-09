@@ -3,7 +3,7 @@
 PDFQ compiles Typst documents to PDF. It has no database: async jobs live in memory and are lost on restart.
 Threat model and its limits: see the [README](../README.md#threat-model).
 An OpenAPI 3.1 description is in [`openapi.yaml`](openapi.yaml). It must be kept in sync with this document, which stays the reference.
-Compatibility is tied to the Typst version: tag built images `pdfq:<version>-typst<typst-version>` (e.g. `pdfq:0.1.0-typst0.15.1`); `/health` reports both. No image is published yet: build it from the `Dockerfile`.
+Compatibility is tied to the Typst version: images are tagged `<version>-typst<typst-version>` (e.g. `ghcr.io/nseaseb/pdfq:0.1.0-typst0.15.1`, see [Docker image](#docker-image)); `/health` reports both.
 
 ## Endpoints
 
@@ -168,6 +168,16 @@ Anti-SSRF: HTTPS only, no credentials in the URL, no redirects, no proxy. Privat
 | `pdfq_webhook_deliveries_total` | counter | `result`: `delivered`, `failed` |
 
 ## Docker image
+
+Published on `ghcr.io/nseaseb/pdfq` for linux/amd64 and linux/arm64, one multi-arch image per release tag, with a build provenance attestation. Tags:
+
+| Tag | Example | Meaning |
+|---|---|---|
+| `<version>-typst<typst-version>` | `0.1.0-typst0.15.1` | Exact release and Typst version (recommended: document output depends on the Typst version) |
+| `<version>` | `0.1.0` | Release |
+| `latest` | | Newest stable release (pre-releases such as `0.2.0-rc.1` do not move it) |
+
+Or build it from the `Dockerfile`: `docker build -t pdfq .`.
 
 Distroless, non-root, `HEALTHCHECK` on `/health`. Volumes: `/templates`, `/fonts` (added to the embedded fonts), `/packages` (`@preview` packages as `/packages/preview/<name>/<version>`, added to the preloaded set listed in `packages/packages.txt`). Port `3000`. The server runs as UID 65532 (`nonroot`): mounted volumes must be readable by it.
 

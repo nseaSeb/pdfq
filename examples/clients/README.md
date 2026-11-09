@@ -13,12 +13,13 @@ Small clients for the [PDFQ API](../../docs/api-spec.md), each showing the same 
 From the repository root, so that `examples/invoice` is mounted as the `invoice` template:
 
 ```sh
-docker build -t pdfq .
 docker run --rm -p 3000:3000 -v "$PWD/examples:/templates:ro" \
   -e PDFQ_WEBHOOK_SECRET=dev-secret \
   -e PDFQ_WEBHOOK_ALLOW_HTTP=true -e PDFQ_WEBHOOK_ALLOW_PRIVATE=true \
-  pdfq
+  ghcr.io/nseaseb/pdfq:0.1.0-typst0.15.1
 ```
+
+To run your own build instead, `docker build -t pdfq .` and replace the image name with `pdfq`.
 
 > **Local testing only.** `PDFQ_WEBHOOK_ALLOW_HTTP` and `PDFQ_WEBHOOK_ALLOW_PRIVATE` let callbacks reach plain-HTTP receivers on your machine. In production, keep the defaults (HTTPS, public addresses) or restrict hosts with `PDFQ_WEBHOOK_ALLOWED_HOSTS`.
 

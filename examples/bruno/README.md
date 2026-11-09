@@ -5,9 +5,10 @@ Requests for every PDFQ endpoint, with assertions, so the collection doubles as 
 Start a server with the example templates mounted:
 
 ```sh
-docker build -t pdfq:dev .
-docker run --rm -p 3000:3000 -v "$PWD/examples:/templates:ro" pdfq:dev
+docker run --rm -p 3000:3000 -v "$PWD/examples:/templates:ro" ghcr.io/nseaseb/pdfq:0.1.0-typst0.15.1
 ```
+
+Or with your own build: `docker build -t pdfq:dev .`, then the same `docker run` with `pdfq:dev`.
 
 Then either open this folder in [Bruno](https://www.usebruno.com/) and pick the `local` environment, or run it from the command line:
 

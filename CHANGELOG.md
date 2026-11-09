@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-09
+
 First version, built against Typst 0.15.1.
 
 ### Added
@@ -19,3 +21,9 @@ First version, built against Typst 0.15.1.
 - Docker image: distroless, non-root, `HEALTHCHECK`, embedded fonts plus `/fonts`, preloaded `@preview` packages (configurable in `packages/packages.txt`) plus `/packages`, templates in `/templates`.
 - `pdfq-cli` for local compilation.
 - CI: formatting, clippy, tests on Linux amd64/arm64 and macOS, veraPDF validation, image build and smoke test.
+- Release workflow: multi-arch images (linux/amd64, linux/arm64) on `ghcr.io/nseaseb/pdfq`, smoke-tested before push, with a build provenance attestation.
+- Documentation: threat model and its limits, architecture and job lifecycle diagrams, OpenAPI 3.1 description (`docs/openapi.yaml`) and a Bruno collection (`examples/bruno/`).
+- Client examples in Python, Node.js and Livebook (Elixir), with webhook receivers that verify the signature (`examples/clients/`).
+
+[Unreleased]: https://github.com/nseaSeb/pdfq/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/nseaSeb/pdfq/releases/tag/v0.1.0

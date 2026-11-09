@@ -8,10 +8,16 @@ Compile [Typst](https://typst.app) documents to PDF over HTTP, synchronously or 
 - **Async jobs:** `POST /jobs`, then poll or receive a signed webhook (HMAC-SHA256, retries, SSRF protection).
 - **Operable:** every limit has a default and a `PDFQ_*` variable, Prometheus `/metrics`, `/health` and `/ready`, distroless non-root image.
 
-> Status: working, not yet published as an image. Build it from the `Dockerfile`.
+> Images are published on `ghcr.io/nseaseb/pdfq` (linux/amd64 and linux/arm64) for each release tag.
 > The full HTTP contract is in [`docs/api-spec.md`](docs/api-spec.md).
 
 ## Quick start
+
+```sh
+docker run --rm -p 3000:3000 -v "$PWD/examples:/templates:ro" ghcr.io/nseaseb/pdfq:0.1.0-typst0.15.1
+```
+
+Tags: `<version>-typst<typst-version>` (pins the Typst version, recommended), `<version>`, and `latest` (newest stable release). To build the image yourself instead:
 
 ```sh
 docker build -t pdfq .
