@@ -19,7 +19,8 @@ Compatibility is tied to the Typst version: tag built images `pdfq:<version>-typ
 
 ## Request (`POST /compile`, `POST /jobs`)
 
-Body: `multipart/form-data`, or `application/json` for template mode without uploads (same field names; `data` is then a JSON value instead of a string).
+Body: `multipart/form-data` (all fields below), or `application/json` for template mode without uploads (see *JSON body*).
+
 
 **Source — exactly one of:**
 
@@ -53,6 +54,31 @@ Factur-X with curl: `-F file=@main.typ -F facturx=@invoice.xml -F facturx_profil
 
 Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", default: "{}")))`.
 
+### JSON body
+
+`Content-Type: application/json`. Same meaning and defaults as the multipart fields above, with these shapes:
+
+| Field | JSON type | Notes |
+|---|---|---|
+| `template` | string | **Required** |
+| `data` | any JSON value | Serialized and exposed as `sys.inputs.data` (string). `null` or absent: no data |
+| `input` | object of strings | `{"who": "world"}` is `input.who=world` |
+| `pdf_standard` | string or array of strings | `"a-3b"` or `["a-2b", "ua-1"]` |
+| `date` | string | `YYYY-MM-DD` |
+| `strict` | boolean | |
+| `attach_data` | boolean | |
+| `facturx` | string | The CII XML itself |
+| `facturx_profile` | string | |
+| `attachment_relationship` | object of strings | Keyed by attachment name: `{"data.json": "alternative"}` |
+| `callback_url` | string | `POST /jobs` only (`400 invalid_input` on `/compile`) |
+
+Not accepted in JSON (multipart only): `file`, `archive`, `entrypoint`, `asset`, `attachment`. Unknown fields are refused (`400 invalid_input`, the message names the field), so are fields of the wrong type.
+
+```json
+{ "template": "invoice", "data": { "number": "F-2026-001" },
+  "input": { "lang": "fr" }, "pdf_standard": ["a-2b", "ua-1"], "date": "2026-11-07" }
+```
+
 ## Responses
 
 **`POST /compile` success:** `200 application/pdf`, headers `X-Pdfq-Pages`, `X-Pdfq-Warnings` (count), `X-Pdfq-Duration-Ms`.
@@ -79,7 +105,7 @@ Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", de
 | `kind` | HTTP | Meaning |
 |---|---|---|
 | `invalid_input` | 400 | Bad multipart, path, JSON, image, option combination |
-| `schema_violation` | 400 | `data` fails the template's `schema.json` (diagnostics carry the JSON pointer) |
+| `schema_violation` | 400 | `data` fails the template's `schema.json` (see *Schema violations*) |
 | `not_found` | 404 | Unknown template or job |
 | `payload_too_large` | 413 | Input limits exceeded |
 | `compile_error` | 422 | Typst errors (or warnings with `strict`) |
@@ -94,6 +120,14 @@ Typst snippet to read the data: `#let data = json(bytes(sys.inputs.at("data", de
 | `internal` | 500 | PDFQ bug (e.g. Factur-X metadata could not be written) |
 
 Document-caused failures are 4xx on purpose: they are deterministic and must not trigger automatic retries.
+
+**Schema violations:** one diagnostic per failed check (at most 20), with `severity` `error`, `file`, `line` and `column` `null`, `hints` empty, and a `message` of the form `<JSON pointer>: <reason>`. The pointer locates the value in `data` (`/` for the root, e.g. a missing required property). Without `data`, an empty object is validated. For `"data": {"number": 42, "client": {"name": 7}}` against a schema requiring strings:
+```json
+{ "error": { "kind": "schema_violation", "message": "`data` does not match the template schema", "detail": null,
+  "diagnostics": [
+    { "severity": "error", "message": "/client/name: 7 is not of type \"string\"", "file": null, "line": null, "column": null, "hints": [] },
+    { "severity": "error", "message": "/number: 42 is not of type \"string\"", "file": null, "line": null, "column": null, "hints": [] } ] } }
+```
 
 ## Webhook
 
