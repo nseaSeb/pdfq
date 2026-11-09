@@ -188,3 +188,5 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.inspect.outputs.digest }}
           push-to-registry: true
+          # Storage records need an organization-owned repository (and artifact-metadata: write).
+          create-storage-record: false
