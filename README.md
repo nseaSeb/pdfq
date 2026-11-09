@@ -1,6 +1,6 @@
 # PDFQ
 
-Compile [Typst](https://typst.app) documents to PDF over HTTP, synchronously or asynchronously (webhook). No database: async jobs are kept in memory. Shipped as a Docker image, built to run untrusted documents. Think "Gotenberg for Typst".
+Compile [Typst](https://typst.app) documents to PDF over HTTP, synchronously or asynchronously (webhook). No database: async jobs are kept in memory. Shipped as a Docker image, hardened against hostile documents. Think "Gotenberg for Typst".
 
 - **Isolated:** every compilation runs in a separate worker process with memory, CPU, file and wall-clock limits. A hostile document gets a typed error (`timeout`, `memory_limit`, …), never a stuck or crashed server.
 - **Templates or uploads:** send `.typ` files, a zip, or the name of a mounted template plus JSON data (optionally checked against a JSON Schema).
@@ -155,6 +155,23 @@ Size the container memory for the sum of:
 - the async job store: `PDFQ_MAX_STORED_SIZE`.
 
 Otherwise the kernel OOM killer acts before the per-job limits and the error is no longer typed (or the server itself is killed). Lower `PDFQ_QUEUE_SIZE`, `PDFQ_MAX_UPLOAD_SIZE` and `PDFQ_MAX_STORED_SIZE` for small containers. `PDFQ_WORKERS` defaults to the CPU count. Memory limits are only enforced on Linux.
+
+### Threat model
+
+Covered:
+
+- Documents that try to exhaust CPU, memory, wall-clock time, pages or output size.
+- Documents that try to read files outside their project, or reach the network, through Typst. The compiler only sees what `PdfqWorld` serves.
+- Zip bombs and image bombs.
+- Hostile webhook targets (SSRF guard: private addresses refused, no redirects, no proxy).
+
+Not covered:
+
+- A memory-safety or logic bug in Typst or its dependencies that gives code execution in the worker. The worker runs as the same user as the server. Network and file confinement come from PDFQ's code, not from the kernel (no seccomp, no namespaces).
+- Workers start with an empty environment, so they do not inherit `PDFQ_WEBHOOK_SECRET`. But code running in a worker as the same user may still be able to read the server's environment through `/proc`.
+- A worker serves up to `PDFQ_JOBS_PER_WORKER` jobs (100 by default), so a compromised worker could see later documents. Set `PDFQ_JOBS_PER_WORKER=1` to start a fresh process per job, at a throughput cost.
+
+Mitigation: run the hardened container shown above, without network access it does not need, and on its own (no other secrets or services in the same container). A seccomp filter in the worker is a possible future step.
 
 ## Observability
 

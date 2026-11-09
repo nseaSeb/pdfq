@@ -1,6 +1,6 @@
 # PDFQ
 
-HTTP service that compiles Typst documents to PDF, sync or async (webhook). No database: async jobs are kept in memory. Shipped as a Docker image, safe against untrusted documents. Think "Gotenberg for Typst".
+HTTP service that compiles Typst documents to PDF, sync or async (webhook). No database: async jobs are kept in memory. Shipped as a Docker image, hardened against hostile documents. Think "Gotenberg for Typst".
 
 - API contract: `docs/api-spec.md` (source of truth for routes, fields, error kinds, limits).
 - License: MIT. Code, comments, docs and commit messages in English.
