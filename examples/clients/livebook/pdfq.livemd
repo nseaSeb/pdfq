@@ -1,0 +1,157 @@
+# PDFQ from Elixir
+
+```elixir
+Mix.install([
+  {:req, "~> 0.7.5"},
+  {:kino, "~> 0.19.1"}
+])
+```
+
+## Setup
+
+Start PDFQ as described in [`examples/clients/README.md`](../README.md), then set its URL.
+
+```elixir
+base_url_input = Kino.Input.text("PDFQ URL", default: "http://localhost:3000")
+```
+
+```elixir
+pdfq = Req.new(base_url: Kino.Input.read(base_url_input), retry: false)
+Req.get!(pdfq, url: "/health").body
+```
+
+## Sync compile from a template
+
+`POST /compile` with a JSON body: the mounted `invoice` template and its data (`examples/invoice/data.json`).
+
+```elixir
+data = %{
+  number: "F-2026-001",
+  date: "2026-11-07",
+  seller: %{name: "Example SAS", address: "1 rue de la Paix, 75002 Paris"},
+  client: %{name: "ACME", address: "42 avenue des Champs, 69000 Lyon"},
+  items: [
+    %{label: "Consulting", qty: 3, price: 650},
+    %{label: "Support plan", qty: 1, price: 199}
+  ]
+}
+
+resp = Req.post!(pdfq, url: "/compile", json: %{template: "invoice", data: data})
+invoice = resp.body
+
+Kino.Layout.grid([
+  Kino.Markdown.new(
+    "**#{resp.status}**: #{byte_size(invoice)} bytes, #{hd(resp.headers["x-pdfq-pages"])} page(s)"
+  ),
+  Kino.Download.new(fn -> invoice end, filename: "invoice.pdf", label: "invoice.pdf")
+])
+```
+
+## Compile uploaded Typst source
+
+Multipart upload: the part's filename is the file's path in the project. `input.<key>` fields become `sys.inputs.<key>`.
+
+```elixir
+source = ~S"""
+= Hello #sys.inputs.at("who", default: "world")!
+Compiled from Livebook.
+"""
+
+resp =
+  Req.post!(pdfq,
+    url: "/compile",
+    form_multipart: [
+      file: {source, filename: "main.typ", content_type: "text/plain"},
+      "input.who": "Livebook"
+    ]
+  )
+
+hello = resp.body
+Kino.Download.new(fn -> hello end, filename: "hello.pdf", label: "hello.pdf (#{byte_size(hello)} bytes)")
+```
+
+## Errors
+
+A broken document fails with `422` and a JSON body: `{"error": {"kind", "message", "diagnostics"}}`.
+
+```elixir
+resp =
+  Req.post!(pdfq,
+    url: "/compile",
+    form_multipart: [file: {"#let total = (1, 2\n= Title\n", filename: "main.typ"}]
+  )
+
+%{"error" => error} = resp.body
+IO.puts("HTTP #{resp.status} #{error["kind"]}: #{error["message"]}")
+
+error["diagnostics"]
+|> Enum.map(&Map.take(&1, ["severity", "file", "line", "column", "message"]))
+|> Kino.DataTable.new(keys: ["severity", "file", "line", "column", "message"])
+```
+
+## Async job with polling
+
+`POST /jobs` answers `202` with `job_id` and `status_url`. Poll the status until it leaves `queued`/`running`, then fetch `/jobs/{id}/pdf`.
+
+```elixir
+%{status: 202, body: %{"job_id" => job_id, "status_url" => status_url}} =
+  Req.post!(pdfq,
+    url: "/jobs",
+    form_multipart: [file: {"= Async job\nFetched by polling.\n", filename: "main.typ"}]
+  )
+
+job =
+  Stream.repeatedly(fn ->
+    Process.sleep(500)
+    Req.get!(pdfq, url: status_url).body
+  end)
+  |> Enum.find(&(&1["status"] not in ["queued", "running"]))
+
+IO.puts("job #{job_id}: #{job["status"]}")
+%{status: 200, body: polled} = Req.get!(pdfq, url: status_url <> "/pdf")
+Kino.Download.new(fn -> polled end, filename: "polled.pdf", label: "polled.pdf (#{byte_size(polled)} bytes)")
+```
+
+## Webhook signature verification
+
+With `callback_url`, PDFQ POSTs the result with `x-pdfq-timestamp` and `x-pdfq-signature: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<body>")>`. A receiver (e.g. a Phoenix controller, reading the raw body) checks it like this:
+
+```elixir
+defmodule PdfqWebhook do
+  @max_age 300
+
+  @doc "Returns true for a fresh, correctly signed delivery. Never raises."
+  def verify(secret, timestamp, signature, body) do
+    with {ts, ""} <- Integer.parse(timestamp || ""),
+         true <- abs(System.os_time(:second) - ts) <= @max_age,
+         true <- is_binary(signature) do
+      expected = "sha256=" <> sign(secret, timestamp, body)
+      # Constant-time compare (OTP 25+); it raises on different lengths.
+      byte_size(signature) == byte_size(expected) and :crypto.hash_equals(signature, expected)
+    else
+      _ -> false
+    end
+  end
+
+  def sign(secret, timestamp, body) do
+    :crypto.mac(:hmac, :sha256, secret, [timestamp, ".", body])
+    |> Base.encode16(case: :lower)
+  end
+end
+```
+
+Self-check: sign a body like PDFQ does, then verify it.
+
+```elixir
+secret = "dev-secret"
+ts = Integer.to_string(System.os_time(:second))
+body = "%PDF-1.7 ..."
+signature = "sha256=" <> PdfqWebhook.sign(secret, ts, body)
+
+%{
+  valid: PdfqWebhook.verify(secret, ts, signature, body),
+  wrong_secret: PdfqWebhook.verify("other", ts, signature, body),
+  tampered_body: PdfqWebhook.verify(secret, ts, signature, body <> "x"),
+  stale: PdfqWebhook.verify(secret, "1700000000", signature, body)
+}
+```
