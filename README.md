@@ -1,6 +1,6 @@
 # PDFQ
 
-Compile [Typst](https://typst.app) documents to PDF over HTTP, synchronously or asynchronously (webhook). Stateless, shipped as a Docker image, built to run untrusted documents. Think "Gotenberg for Typst".
+Compile [Typst](https://typst.app) documents to PDF over HTTP, synchronously or asynchronously (webhook). No database: async jobs are kept in memory. Shipped as a Docker image, built to run untrusted documents. Think "Gotenberg for Typst".
 
 - **Isolated:** every compilation runs in a separate worker process with memory, CPU, file and wall-clock limits. A hostile document gets a typed error (`timeout`, `memory_limit`, …), never a stuck or crashed server.
 - **Templates or uploads:** send `.typ` files, a zip, or the name of a mounted template plus JSON data (optionally checked against a JSON Schema).

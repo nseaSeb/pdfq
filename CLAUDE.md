@@ -1,6 +1,6 @@
 # PDFQ
 
-HTTP service that compiles Typst documents to PDF, sync or async (webhook). Stateless, shipped as a Docker image, safe against untrusted documents. Think "Gotenberg for Typst".
+HTTP service that compiles Typst documents to PDF, sync or async (webhook). No database: async jobs are kept in memory. Shipped as a Docker image, safe against untrusted documents. Think "Gotenberg for Typst".
 
 - API contract: `docs/api-spec.md` (source of truth for routes, fields, error kinds, limits).
 - License: MIT. Code, comments, docs and commit messages in English.
@@ -71,6 +71,6 @@ docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5
 ## Conventions
 
 - One commit per milestone; stop for review after each.
-- Stateless: no database. Async jobs live in memory and are lost on restart (documented).
+- No database: async jobs live in memory and are lost on restart (documented).
 - Every limit has a default and a `PDFQ_*` env var / CLI flag (clap).
 - `unsafe` is denied workspace-wide (`forbid` in core, cli, protocol). Only `worker` (allocator, rlimits) and `server/src/spawn.rs` opt out, with `SAFETY` comments.
