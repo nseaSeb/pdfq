@@ -12,6 +12,10 @@ use common::{worker_bin, workspace};
 use pdfq_protocol::{ErrorKind, File, Job, JobOptions, JobSource};
 use pdfq_server::pool::{Pool, PoolConfig};
 
+fn start(config: PoolConfig) -> Pool {
+    Pool::start(config).expect("start the pool")
+}
+
 fn config() -> PoolConfig {
     PoolConfig {
         worker_bin: worker_bin(),
@@ -84,14 +88,14 @@ async fn expect(pool: &Pool, job: Job, kind: ErrorKind) -> pdfq_protocol::JobErr
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sane_document_compiles() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     let out = pool.compile(sane()).await.unwrap();
     assert_eq!(out.pages, 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn infinite_loop_hits_the_cpu_limit() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         cpu_timeout: Duration::from_secs(2),
         ..config()
     });
@@ -101,7 +105,7 @@ async fn infinite_loop_hits_the_cpu_limit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn infinite_loop_hits_the_wall_clock_limit() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         cpu_timeout: Duration::from_secs(60),
         wall_timeout: Duration::from_secs(2),
         ..config()
@@ -115,27 +119,27 @@ async fn infinite_loop_hits_the_wall_clock_limit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn deep_recursion_is_a_compile_error() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     let err = expect(&pool, hostile("deep-recursion"), ErrorKind::CompileError).await;
     assert!(err.diagnostics[0].message.contains("call depth"), "{err:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn thousands_of_pages_hit_the_page_limit() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     expect(&pool, hostile("thousands-pages"), ErrorKind::TooManyPages).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn path_traversal_is_refused() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     let err = expect(&pool, hostile("path-traversal"), ErrorKind::CompileError).await;
     assert!(err.diagnostics[0].message.contains("escape"), "{err:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn forbidden_package_is_refused() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     expect(
         &pool,
         hostile("forbidden-package"),
@@ -154,7 +158,7 @@ async fn template_symlink_escape_is_refused() {
     std::fs::write(dir.join("main.typ"), "#read(\"secret.txt\")").unwrap();
     std::os::unix::fs::symlink(outside.path().join("secret.txt"), dir.join("secret.txt")).unwrap();
 
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         worker_args: vec!["--template-dir".into(), templates.path().into()],
         ..config()
     });
@@ -173,7 +177,7 @@ async fn template_symlink_escape_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pool_output_limit_applies_to_every_job() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         max_output_size: 100,
         ..config()
     });
@@ -188,7 +192,7 @@ async fn asset_paths_cannot_leave_assets() {
     let templates = tempfile::tempdir().unwrap();
     std::fs::create_dir(templates.path().join("t")).unwrap();
     std::fs::write(templates.path().join("t/main.typ"), "ok").unwrap();
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         worker_args: vec!["--template-dir".into(), templates.path().into()],
         ..config()
     });
@@ -208,7 +212,7 @@ async fn asset_paths_cannot_leave_assets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_worker_binary_fails_queued_jobs() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         worker_bin: "/nonexistent/pdfq-worker".into(),
         ..config()
     });
@@ -219,7 +223,7 @@ async fn missing_worker_binary_fails_queued_jobs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn output_size_is_limited() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     let mut big = sane();
     big.options.max_output_size = 100;
     expect(&pool, big, ErrorKind::OutputTooLarge).await;
@@ -228,14 +232,14 @@ async fn output_size_is_limited() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn doubling_array_hits_the_memory_limit() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     expect(&pool, hostile("doubling-array"), ErrorKind::MemoryLimit).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn exponential_recursion_is_stopped() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     let err = pool.compile(hostile("exp-recursion")).await.unwrap_err();
     // Memoization grows with every distinct call: depending on the budgets, the
     // CPU or the memory limit is reached first.
@@ -249,7 +253,7 @@ async fn exponential_recursion_is_stopped() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn image_bomb_is_stopped() {
-    let pool = Pool::start(config());
+    let pool = start(config());
     // The decoder allocates the full 40 GB pixel buffer from the header. Header
     // pre-validation (server side) will turn this into `invalid_input` earlier.
     expect(&pool, hostile("image-bomb"), ErrorKind::MemoryLimit).await;
@@ -257,7 +261,7 @@ async fn image_bomb_is_stopped() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hostile_job_does_not_block_other_workers() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         wall_timeout: Duration::from_secs(10),
         ..config()
     });
@@ -276,7 +280,7 @@ async fn a_hostile_job_does_not_block_other_workers() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn full_queue_is_refused() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         workers: 1,
         queue_size: 1,
         wall_timeout: Duration::from_secs(3),
@@ -293,7 +297,7 @@ async fn full_queue_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jobs_waiting_too_long_are_not_run() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         workers: 1,
         wall_timeout: Duration::from_secs(3),
         queue_timeout: Duration::from_secs(1),
@@ -310,7 +314,7 @@ async fn jobs_waiting_too_long_are_not_run() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn workers_are_recycled() {
-    let pool = Pool::start(PoolConfig {
+    let pool = start(PoolConfig {
         workers: 1,
         jobs_per_worker: 2,
         ..config()

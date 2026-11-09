@@ -96,7 +96,7 @@ Document-caused failures are 4xx on purpose: they are deterministic and must not
 
 ## Webhook
 
-Disabled unless `PDFQ_WEBHOOK_SECRET` is set (`callback_url` is then refused with `400`).
+Disabled unless `PDFQ_WEBHOOK_SECRET` is set (`callback_url` is then refused with `400`). The secret is read from the environment only (there is no command-line flag), so it never shows in the process command line.
 
 On completion, `POST callback_url` with the PDF (`application/pdf`) on success, or the error JSON (`{"error": {…}}`, `application/json`) on failure.
 Headers: `X-Pdfq-Job-Id`, `X-Pdfq-Status` (`succeeded`/`failed`), `X-Pdfq-Timestamp` (Unix seconds), `X-Pdfq-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>`. Receivers should check the signature and reject old timestamps.
@@ -107,7 +107,7 @@ Anti-SSRF: HTTPS only, no credentials in the URL, no redirects, no proxy. Privat
 
 | Variable | Default | |
 |---|---|---|
-| `PDFQ_WEBHOOK_SECRET` | — | HMAC key; enables webhooks |
+| `PDFQ_WEBHOOK_SECRET` | — | HMAC key; enables webhooks. Environment only |
 | `PDFQ_WEBHOOK_ALLOWED_HOSTS` | any | Comma-separated hosts, `*.example.com` matches subdomains |
 | `PDFQ_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow private and loopback targets (internal networks) |
 | `PDFQ_WEBHOOK_ALLOW_HTTP` | `false` | Allow plain `http` |

@@ -87,7 +87,9 @@ pub struct Config {
     pub max_stored_size: u64,
 
     /// Secret used to sign webhooks (HMAC-SHA256). Webhooks are disabled without it.
-    #[arg(long, env = "PDFQ_WEBHOOK_SECRET", hide_env_values = true)]
+    /// Read from `PDFQ_WEBHOOK_SECRET` only, never from a flag: the command line
+    /// of a process is world-readable in `/proc/<pid>/cmdline`.
+    #[arg(skip = webhook_secret_from_env())]
     pub webhook_secret: Option<String>,
     /// Hosts allowed as callback targets, like hooks.example.com or *.example.com
     /// (comma-separated). Default: any public host.
@@ -121,9 +123,12 @@ impl Config {
         }
         let command = Wrapper::command().mut_args(|arg| arg.env(None));
         let matches = command.get_matches_from(["pdfq"]);
-        Wrapper::from_arg_matches(&matches)
-            .expect("defaults are valid")
-            .config
+        Config {
+            webhook_secret: None,
+            ..Wrapper::from_arg_matches(&matches)
+                .expect("defaults are valid")
+                .config
+        }
     }
 }
 
@@ -158,6 +163,13 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
 
 pub use pdfq_protocol::parse_size;
 
+/// `PDFQ_WEBHOOK_SECRET`, environment only (an empty value means unset).
+fn webhook_secret_from_env() -> Option<String> {
+    std::env::var("PDFQ_WEBHOOK_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +191,43 @@ mod tests {
         assert_eq!(c.max_pages, 500);
         assert_eq!(c.max_upload_size, 50 << 20);
         assert_eq!(c.wall_timeout, Duration::from_secs(30));
+        assert_eq!(c.webhook_secret, None);
+    }
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        config: Config,
+    }
+
+    #[test]
+    fn webhook_secret_is_not_a_flag() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["pdfq", "--webhook-secret", "x"]).is_err());
+    }
+
+    /// Run by [`webhook_secret_comes_from_the_environment`] in a child process
+    /// (setting the variable here would need `unsafe`).
+    #[test]
+    fn webhook_secret_env_child() {
+        use clap::Parser;
+        if std::env::var_os("PDFQ_TEST_ENV_CHILD").is_none() {
+            return;
+        }
+        let cli = Cli::try_parse_from(["pdfq"]).unwrap();
+        assert_eq!(cli.config.webhook_secret.as_deref(), Some("s3cret"));
+    }
+
+    #[test]
+    fn webhook_secret_comes_from_the_environment() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "config::tests::webhook_secret_env_child"])
+            .env("PDFQ_TEST_ENV_CHILD", "1")
+            .env("PDFQ_WEBHOOK_SECRET", "s3cret")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
     }
 }

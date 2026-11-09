@@ -31,6 +31,12 @@ done
 curl -fsS "$url/health" | grep -q '"typst_version"' || fail "/health"
 echo "ok: healthy"
 
+# Binaries are execute-only for nonroot (no dumpable window at exec).
+for bin in pdfq pdfq-worker; do
+  docker cp "$name:/usr/local/bin/$bin" - | tar -tvf - | grep -q '^-rwx--x--x' || fail "$bin mode"
+done
+echo "ok: execute-only binaries"
+
 # POST /compile with main.typ (and extra curl args); prints "status kind".
 compile() {
   local main=$1; shift

@@ -117,7 +117,7 @@ PDFQ embeds the CII XML you provide; it does not generate it, nor validate it ag
 
 ## Configuration
 
-Every setting has a default and can be set with an environment variable or the matching flag (`docker run --rm pdfq --help`), except `PDFQ_LOG` (environment only). Sizes accept `KiB`/`MiB`/`GiB`, durations `s`/`m`/`h`.
+Every setting has a default and can be set with an environment variable or the matching flag (`docker run --rm pdfq --help`), except `PDFQ_LOG` and `PDFQ_WEBHOOK_SECRET` (environment only, so the secret never shows in the process command line). Sizes accept `KiB`/`MiB`/`GiB`, durations `s`/`m`/`h`.
 
 | Variable | Default | |
 |---|---|---|
@@ -164,11 +164,13 @@ Covered:
 - Documents that try to read files outside their project, or reach the network, through Typst. The compiler only sees what `PdfqWorld` serves.
 - Zip bombs and image bombs.
 - Hostile webhook targets (SSRF guard: private addresses refused, no redirects, no proxy).
-- On Linux, the server and workers are non-dumpable: a worker cannot read the memory or environment of the server or of other workers through `/proc`, nor ptrace them. Workers also start with an empty environment, so they do not inherit `PDFQ_WEBHOOK_SECRET`.
+- On Linux, the server and workers are non-dumpable: a worker cannot read `/proc/<pid>/environ` or `/proc/<pid>/mem` of the server or of other workers, nor ptrace them. In the image, `pdfq` and `pdfq-worker` are execute-only (mode `0711`, owned by root), so the kernel starts them non-dumpable, with no window before `main`. `/proc/<pid>/cmdline` stays world-readable, which is why `PDFQ_WEBHOOK_SECRET` can only be set in the environment. Workers also start with an empty environment, so they do not inherit it.
 
 Not covered:
 
 - A memory-safety or logic bug in Typst or its dependencies that gives code execution in the worker. The worker runs as the same user as the server. Network and file confinement come from PDFQ's code, not from the kernel (no seccomp, no namespaces).
+- A compromised worker runs as the same user, so it can still send signals to the server and other workers (stop or kill them): a denial of service, not a data leak.
+- Outside the image, install `pdfq-worker` (and `pdfq`) with mode `0711`, owned by another user than the one running the service; otherwise a worker is dumpable between `execve` and its first instruction, and a sibling that opens its `/proc` files in that window keeps access. This relies on `fs.suid_dumpable` being `0` (the default) or `2`.
 - A worker serves up to `PDFQ_JOBS_PER_WORKER` jobs (100 by default), so a compromised worker could see later documents. Set `PDFQ_JOBS_PER_WORKER=1` to start a fresh process per job, at a throughput cost.
 
 Mitigation: run the hardened container shown above, without network access it does not need, and on its own (no other secrets or services in the same container). A seccomp filter in the worker is a possible future step.

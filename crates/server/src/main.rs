@@ -41,11 +41,6 @@ fn serve(config: Config) -> ExitCode {
             EnvFilter::try_from_env("PDFQ_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    // Before any worker exists: a compromised worker runs as the same user.
-    if let Err(err) = pdfq_server::set_non_dumpable() {
-        tracing::error!("cannot make the server non-dumpable: {err}");
-        return ExitCode::FAILURE;
-    }
     let worker_bin = config.worker_bin.clone().unwrap_or_else(default_worker_bin);
     if !worker_bin.is_file() {
         tracing::error!(path = %worker_bin.display(), "pdfq-worker not found (set PDFQ_WORKER_BIN)");
@@ -59,7 +54,13 @@ fn serve(config: Config) -> ExitCode {
     };
     runtime.block_on(async move {
         let bind = config.bind;
-        let state = pdfq_server::start(config, worker_bin);
+        let state = match pdfq_server::start(config, worker_bin) {
+            Ok(state) => state,
+            Err(err) => {
+                tracing::error!("cannot make the server non-dumpable: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
         let app = pdfq_server::api::router(state);
         let listener = match tokio::net::TcpListener::bind(bind).await {
             Ok(listener) => listener,

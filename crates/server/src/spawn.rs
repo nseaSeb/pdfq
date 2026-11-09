@@ -21,8 +21,11 @@ pub struct HardLimits {
 /// the same user, such as a compromised worker, cannot read its memory or
 /// environment through `/proc` nor ptrace it. No-op on other systems.
 ///
-/// `execve` resets the flag, so workers must set it themselves.
-pub fn set_non_dumpable() -> io::Result<()> {
+/// Called by [`crate::pool::Pool::start`] before the first worker is spawned;
+/// idempotent. `execve` resets the flag, so workers must set it themselves
+/// (the image also installs `pdfq-worker` execute-only, which closes the window
+/// before the worker's `main`).
+pub(crate) fn set_non_dumpable() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: prctl with integer arguments only; no memory is passed.

@@ -32,7 +32,9 @@ COPY --from=build /out/pdfq-cli /usr/local/bin/
 RUN pdfq-cli compile /tmp/smoke.typ --package-path /opt/pdfq/packages -o /tmp/smoke.pdf
 
 FROM ${RUNTIME_IMAGE}
-COPY --from=build /out/pdfq /out/pdfq-worker /usr/local/bin/
+# Execute-only for nonroot (owned by root): exec of a binary the user cannot read
+# starts non-dumpable, so a sibling worker never gets a window to open /proc/<pid>/mem.
+COPY --chmod=0711 --from=build /out/pdfq /out/pdfq-worker /usr/local/bin/
 COPY --from=packages /opt/pdfq/packages /opt/pdfq/packages
 ENV PDFQ_BIND=0.0.0.0:3000 \
     PDFQ_FONT_PATHS=/fonts \

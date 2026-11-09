@@ -39,7 +39,7 @@ fn templates() -> &'static std::path::Path {
 }
 
 fn app_with(config: Config) -> Router {
-    let state = pdfq_server::start(config, common::worker_bin());
+    let state = pdfq_server::start(config, common::worker_bin()).unwrap();
     pdfq_server::api::router(state)
 }
 
@@ -402,7 +402,8 @@ async fn requests_beyond_capacity_are_refused_before_reading_them() {
             ..config()
         },
         common::worker_bin(),
-    );
+    )
+    .unwrap();
     // Capacity is workers + queue_size = 2: hold both slots.
     let _held = (state.admit().unwrap(), state.admit().unwrap());
     let app = pdfq_server::api::router(state);
@@ -430,7 +431,7 @@ async fn health_and_readiness() {
     assert_eq!(body["typst_version"], "0.15.1");
 
     // No worker can start: unhealthy.
-    let broken = pdfq_server::start(config(), "/nonexistent/pdfq-worker".into());
+    let broken = pdfq_server::start(config(), "/nonexistent/pdfq-worker".into()).unwrap();
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let (status, _, _) = send(pdfq_server::api::router(broken), request).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -620,7 +621,7 @@ fn metric(metrics: &[(String, f64)], series: &str) -> f64 {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn exposes_prometheus_metrics() {
-    let state = pdfq_server::start(config(), common::worker_bin());
+    let state = pdfq_server::start(config(), common::worker_bin()).unwrap();
     let app = pdfq_server::api::router(state.clone());
     let ok = multipart(&[("file", Some("main.typ"), b"Hello")]);
     assert_eq!(send(app.clone(), ok).await.0, StatusCode::OK);

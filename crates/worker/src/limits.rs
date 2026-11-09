@@ -27,6 +27,24 @@ macro_rules! set_soft {
     }};
 }
 
+/// Makes the worker non-dumpable (Linux), so that a sibling worker running as
+/// the same user, if compromised, cannot read its memory or environment through
+/// `/proc` nor ptrace it. No-op on other systems.
+///
+/// `execve` resets the flag, so this runs first thing in `main`. When the binary
+/// is not readable by the user running it (mode 0711, as in the image), the
+/// kernel already starts it non-dumpable and this is a no-op.
+pub fn set_non_dumpable() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: prctl with integer arguments only; no memory is passed.
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Arms the soft limits for the next job.
 pub fn arm(memory_budget: u64, cpu_budget_secs: u64) {
     if memory_budget > 0

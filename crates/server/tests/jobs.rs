@@ -34,7 +34,7 @@ fn config() -> Config {
 }
 
 fn app(config: Config) -> Router {
-    pdfq_server::api::router(pdfq_server::start(config, common::worker_bin()))
+    pdfq_server::api::router(pdfq_server::start(config, common::worker_bin()).unwrap())
 }
 
 /// A `POST /jobs` with `main.typ` and an optional callback.

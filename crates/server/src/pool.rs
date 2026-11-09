@@ -118,7 +118,12 @@ pub struct Pool {
 
 impl Pool {
     /// Starts the worker slots. Must be called inside a Tokio runtime.
-    pub fn start(config: PoolConfig) -> Self {
+    ///
+    /// On Linux this first makes the current process non-dumpable (see
+    /// [`crate::spawn::set_non_dumpable`]) and fails if it cannot: workers run as
+    /// the same user, so this must happen before the first one exists.
+    pub fn start(config: PoolConfig) -> std::io::Result<Self> {
+        crate::spawn::set_non_dumpable()?;
         let (queue, receiver) = async_channel::bounded(config.queue_size.max(1));
         let stats = Arc::new(PoolStats::default());
         let max_output_size = config.max_output_size;
@@ -131,11 +136,11 @@ impl Pool {
                 stats.clone(),
             ));
         }
-        Self {
+        Ok(Self {
             queue,
             stats,
             max_output_size,
-        }
+        })
     }
 
     /// Queues a job. Fails immediately with `queue_full` when the queue is full.

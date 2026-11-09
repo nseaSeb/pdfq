@@ -13,8 +13,6 @@ mod spawn;
 pub mod validate;
 pub mod webhook;
 
-pub use spawn::set_non_dumpable;
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,12 +56,14 @@ pub fn pool_config(config: &Config, worker_bin: PathBuf) -> PoolConfig {
 }
 
 /// Starts the worker pool and returns the application state. Requires a Tokio runtime.
-pub fn start(config: Config, worker_bin: PathBuf) -> AppState {
+///
+/// Fails if the process cannot be made non-dumpable on Linux (see [`Pool::start`]).
+pub fn start(config: Config, worker_bin: PathBuf) -> std::io::Result<AppState> {
     let pool_config = pool_config(&config, worker_bin);
     let admission = Arc::new(tokio::sync::Semaphore::new(
         pool_config.workers.max(1) + pool_config.queue_size.max(1),
     ));
-    let pool = Pool::start(pool_config);
+    let pool = Pool::start(pool_config)?;
     let jobs = Arc::new(JobStore::new(StoreLimits {
         ttl: config.job_ttl,
         max_jobs: config.max_jobs,
@@ -88,7 +88,7 @@ pub fn start(config: Config, worker_bin: PathBuf) -> AppState {
         retries: config.webhook_retries,
         retry_delay: config.webhook_retry_delay,
     });
-    AppState {
+    Ok(AppState {
         config: Arc::new(config),
         pool: Arc::new(pool),
         admission,
@@ -96,5 +96,5 @@ pub fn start(config: Config, worker_bin: PathBuf) -> AppState {
         jobs,
         webhooks,
         rejected: Default::default(),
-    }
+    })
 }
