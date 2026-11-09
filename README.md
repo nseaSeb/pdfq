@@ -42,6 +42,80 @@ Errors are JSON with a `kind` and, for compile errors, diagnostics with file, li
 
 Document-caused failures (`compile_error`, `timeout`, `memory_limit`, `too_many_pages`, …) are `422`: they are deterministic, resending the same document gives the same error. Worth retrying later: `429` (`queue_full`), `500` (`worker_crashed`, `internal`), and an async job that failed with `queue_full` (resubmit it).
 
+## Architecture
+
+The HTTP server validates and queues requests; Typst only ever runs in separate, rlimited worker processes.
+
+```mermaid
+flowchart LR
+    client(["Client"])
+    callback(["Client callback URL"])
+
+    subgraph server["pdfq server (never links Typst)"]
+        direction TB
+        api["API: /compile, /jobs, /health, /ready, /metrics"]
+        validate["Parsing and validation<br/>sizes, zip, images, paths, schema"]
+        queue["Admission and bounded queue"]
+        store[("Job store, in memory, TTL")]
+        webhook["Webhook sender<br/>HMAC, retries, SSRF guard"]
+        pool["Worker pool supervisor"]
+        api --> validate --> queue --> pool
+        api <--> store
+        store --> webhook
+    end
+
+    subgraph workers["Process boundary: isolated workers"]
+        direction TB
+        worker["N x pdfq-worker<br/>rlimits, non-dumpable<br/>one job at a time, recycled"]
+        core["pdfq-core / Typst<br/>PdfqWorld: project files, templates,<br/>local packages, fonts, no network"]
+        pdf["PDF export<br/>+ Factur-X XMP post-processing"]
+        worker --> core --> pdf
+    end
+
+    client -- "HTTP request" --> api
+    api -- "PDF or JSON error" --> client
+    pool <-- "postcard frames over stdin/stdout" --> worker
+    webhook -- "signed POST" --> callback
+```
+
+- `pdfq` parses and validates every request (sizes, zip contents, image headers, paths, template JSON Schema) before anything reaches a worker, and answers `429` when the queue is full.
+- Each `pdfq-worker` handles one job at a time, exchanging length-prefixed postcard frames with the server over stdin/stdout, and is replaced after a crash, a timeout or `PDFQ_JOBS_PER_WORKER` jobs.
+- `PdfqWorld` reads only the job's files, mounted templates, local packages and fonts: no network.
+- Async jobs follow this lifecycle:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant S as pdfq server
+    participant P as Worker pool
+    participant W as pdfq-worker
+    participant H as Callback URL
+
+    C->>S: POST /jobs (files or template, optional callback_url)
+    S->>S: Parse and validate, check callback_url (4xx on refusal)
+    S->>P: Record the job, queue it (429 queue_full if full)
+    S-->>C: 202 {job_id, status_url}
+    Note over S: status: queued
+    P->>W: Job frame
+    Note over S: status: running
+    W-->>P: PDF, or typed error (compile_error, timeout, memory_limit...)
+    P-->>S: Result
+    S->>S: Store PDF or error in memory (succeeded / failed)
+    opt callback_url given
+        loop Up to PDFQ_WEBHOOK_RETRIES retries, backoff x4
+            S->>H: POST PDF or error JSON, X-Pdfq-Signature (HMAC-SHA256)
+            H-->>S: 2xx delivered, or 5xx, 429, network error: retry
+        end
+        Note over S: webhook: delivered or failed
+    end
+    C->>S: GET /jobs/{id}
+    S-->>C: 200 status, warnings, error, webhook state
+    C->>S: GET /jobs/{id}/pdf
+    S-->>C: 200 PDF, 409 not finished, 422 failed
+    Note over S: Expires after the TTL (404 afterwards).<br/>The TTL starts once the job finishes,<br/>or once a pending webhook settles.
+```
+
 ## Usage
 
 ### Data and inputs
