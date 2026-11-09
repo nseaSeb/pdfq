@@ -11,6 +11,8 @@ Compile [Typst](https://typst.app) documents to PDF over HTTP, synchronously or 
 > Images are published on `ghcr.io/nseaseb/pdfq` (linux/amd64 and linux/arm64) for each release tag.
 > The full HTTP contract is in [`docs/api-spec.md`](docs/api-spec.md).
 
+![PDFQ demo: compile, template, refused file read, memory bomb, server still healthy](docs/demo/pdfq-demo.gif)
+
 ## Quick start
 
 ```sh
