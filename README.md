@@ -169,6 +169,7 @@ def verify(secret: bytes, headers: dict, body: bytes, max_age: int = 300) -> boo
 By default callbacks must be HTTPS and resolve to public addresses. A receiver on your machine or private network needs `PDFQ_WEBHOOK_ALLOW_HTTP=true` and `PDFQ_WEBHOOK_ALLOW_PRIVATE=true`; `PDFQ_WEBHOOK_ALLOWED_HOSTS` restricts callbacks to a list of hosts. Jobs live in memory: **a restart loses them**.
 
 Client examples in Python, Node.js and Elixir (Livebook): [`examples/clients/`](examples/clients/) (the Python one includes a complete webhook receiver around this `verify()`).
+An OpenAPI 3.1 description is in [`docs/openapi.yaml`](docs/openapi.yaml): import it into Postman, Insomnia or Bruno, or generate clients from it. A ready-made Bruno collection, runnable as a smoke test with `bru run`, is in [`examples/bruno/`](examples/bruno/).
 
 ### Attachments and Factur-X
 

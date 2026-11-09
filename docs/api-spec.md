@@ -2,6 +2,7 @@
 
 PDFQ compiles Typst documents to PDF. It has no database: async jobs live in memory and are lost on restart.
 Threat model and its limits: see the [README](../README.md#threat-model).
+An OpenAPI 3.1 description is in [`openapi.yaml`](openapi.yaml). It must be kept in sync with this document, which stays the reference.
 Compatibility is tied to the Typst version: tag built images `pdfq:<version>-typst<typst-version>` (e.g. `pdfq:0.1.0-typst0.15.1`); `/health` reports both. No image is published yet: build it from the `Dockerfile`.
 
 ## Endpoints

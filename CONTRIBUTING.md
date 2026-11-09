@@ -5,7 +5,7 @@ Thanks for your interest. Issues and pull requests are welcome. For anything bey
 ## Ground rules
 
 - **Security first.** PDFQ runs untrusted documents. A change must not let a document read files outside its project, reach the network, or escape the worker limits. If you find a way to do one of these, report it privately (see below) rather than in a public issue.
-- **The API contract lives in [`docs/api-spec.md`](docs/api-spec.md).** Change it in the same pull request as the code.
+- **The API contract lives in [`docs/api-spec.md`](docs/api-spec.md) and [`docs/openapi.yaml`](docs/openapi.yaml).** Change them in the same pull request as the code.
 - **Every limit has a default and a `PDFQ_*` variable / CLI flag.** No hard-coded resource limits, OS hardening included (e.g. `PDFQ_WORKER_OPEN_FILES`).
 - **No database, no disk state.** Async jobs live in memory and are lost on restart.
 - Code, comments, docs and commit messages are in English.

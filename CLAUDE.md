@@ -3,6 +3,7 @@
 HTTP service that compiles Typst documents to PDF, sync or async (webhook). No database: async jobs are kept in memory. Shipped as a Docker image, hardened against hostile documents. Think "Gotenberg for Typst".
 
 - API contract: `docs/api-spec.md` (source of truth for routes, fields, error kinds, limits).
+- OpenAPI: `docs/openapi.yaml` mirrors the spec; keep it in sync (redocly lint in CI, `crates/server/tests/openapi.rs` checks error kinds and routes). Bruno collection: `examples/bruno/`.
 - License: MIT. Code, comments, docs and commit messages in English.
 
 ## Architecture (Cargo workspace)

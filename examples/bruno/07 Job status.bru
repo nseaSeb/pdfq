@@ -1,0 +1,23 @@
+meta {
+  name: Job status
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/jobs/{{jobId}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  // Give the worker time to finish the job created by the previous request.
+  await bru.sleep(1500);
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq succeeded
+  res.body.pages: eq 1
+  res.body.webhook: isNull
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Compile upload
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/compile
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  file: @file(files/main.typ)
+  date: 2026-11-07
+}
+
+docs {
+  The part's filename is the file's path in the project: Bruno sends the
+  basename, so `files/main.typ` becomes `main.typ`, the default entrypoint.
+}
+
+assert {
+  res.status: eq 200
+  res.headers["content-type"]: eq application/pdf
+}

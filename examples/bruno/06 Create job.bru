@@ -1,0 +1,35 @@
+meta {
+  name: Create job
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "template": "invoice",
+    "date": "2026-11-07",
+    "data": {
+      "number": "F-2026-002",
+      "date": "2026-11-07",
+      "seller": { "name": "Example SAS", "address": "1 rue de la Paix, 75002 Paris" },
+      "client": { "name": "ACME", "address": "42 avenue des Champs, 69000 Lyon" },
+      "items": [{ "label": "Consulting", "qty": 1, "price": 650 }]
+    }
+  }
+}
+
+assert {
+  res.status: eq 202
+  res.body.job_id: isString
+  res.headers.location: startsWith /jobs/
+}
+
+script:post-response {
+  bru.setVar("jobId", res.body.job_id);
+}

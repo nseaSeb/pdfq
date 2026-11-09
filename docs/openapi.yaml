@@ -1,0 +1,584 @@
+openapi: 3.1.0
+info:
+  title: PDFQ
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: |
+    PDFQ compiles Typst documents to PDF, synchronously (`POST /compile`) or as
+    async jobs (`POST /jobs`, optional signed webhook).
+
+    The reference contract is [`docs/api-spec.md`](https://github.com/nseaSeb/pdfq/blob/main/docs/api-spec.md):
+    this description must be kept in sync with it, and the spec wins on any
+    disagreement. Threat model and its limits: see the
+    [README](https://github.com/nseaSeb/pdfq/blob/main/README.md#threat-model).
+
+    Every limit (sizes, pages, timeouts, queue) is server-wide and configured
+    through `PDFQ_*` environment variables; a request cannot change them.
+servers:
+  - url: http://localhost:3000
+    description: Local server (Docker image default port)
+security: []
+tags:
+  - name: compile
+    description: Synchronous compilation
+  - name: jobs
+    description: Async jobs (in memory, lost on restart)
+  - name: ops
+    description: Health, readiness and metrics
+
+paths:
+  /compile:
+    post:
+      tags: [compile]
+      operationId: compile
+      summary: Compile synchronously and respond with the PDF
+      description: |
+        Exactly one source: `template`, `file` parts, or `archive`.
+        `callback_url` is refused here (`400 invalid_input`).
+      requestBody:
+        $ref: '#/components/requestBodies/CompileRequest'
+      responses:
+        '200':
+          description: The PDF.
+          headers:
+            X-Pdfq-Pages:
+              description: Number of pages.
+              schema: { type: integer, minimum: 0 }
+            X-Pdfq-Warnings:
+              description: Number of Typst warnings.
+              schema: { type: integer, minimum: 0 }
+            X-Pdfq-Duration-Ms:
+              description: Time from submission to result, in milliseconds.
+              schema: { type: integer, minimum: 0 }
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/QueueFull' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /jobs:
+    post:
+      tags: [jobs]
+      operationId: createJob
+      summary: Queue a compilation
+      description: |
+        Same body as `POST /compile`, plus `callback_url`. Input errors are
+        reported synchronously with the same codes as `/compile`. An accepted
+        job that waits longer than `PDFQ_QUEUE_TIMEOUT` for a worker ends
+        `failed` with `queue_full`: resubmit it.
+      requestBody:
+        $ref: '#/components/requestBodies/CompileRequest'
+      responses:
+        '202':
+          description: Job accepted.
+          headers:
+            Location:
+              description: Status URL of the job (`/jobs/<uuid>`).
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '429': { $ref: '#/components/responses/QueueFull' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /jobs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: Job status
+      responses:
+        '200':
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobStatus' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /jobs/{id}/pdf:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      operationId: getJobPdf
+      summary: Job result
+      responses:
+        '200':
+          description: The PDF.
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The job has not finished yet (`not_finished`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: The job failed. Always 422, whatever the error `kind`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /health:
+    get:
+      tags: [ops]
+      operationId: health
+      summary: Liveness and versions
+      description: '`503` while no worker process is alive. Busy workers count as alive.'
+      responses:
+        '200':
+          description: At least one worker process is alive.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: No worker process is alive (`status` is `no_worker`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /ready:
+    get:
+      tags: [ops]
+      operationId: ready
+      summary: Readiness
+      description: Ready when at least one worker is ready and the queue is not full.
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ready' }
+        '503':
+          description: Not ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ready' }
+
+  /metrics:
+    get:
+      tags: [ops]
+      operationId: metrics
+      summary: Prometheus metrics
+      description: Prometheus text format. Never refused for capacity. Metric list in `docs/api-spec.md`.
+      responses:
+        '200':
+          description: Metrics.
+          content:
+            text/plain:
+              schema: { type: string }
+
+webhooks:
+  jobFinished:
+    post:
+      operationId: jobFinished
+      summary: Job outcome, sent to `callback_url`
+      description: |
+        Sent once a job finishes, only when it was created with `callback_url`
+        (webhooks are disabled unless `PDFQ_WEBHOOK_SECRET` is set).
+
+        Signature: `X-Pdfq-Signature` is `sha256=` followed by the lowercase hex
+        HMAC-SHA256, keyed with `PDFQ_WEBHOOK_SECRET`, of
+        `<X-Pdfq-Timestamp> + "." + <raw request body bytes>`. Receivers should
+        check it in constant time and reject old timestamps.
+
+        Any 2xx is a delivery. Network errors, 5xx and 429 are retried
+        (`PDFQ_WEBHOOK_RETRIES` times, delay x4 from `PDFQ_WEBHOOK_RETRY_DELAY`);
+        other statuses are final. The outcome shows in `GET /jobs/{id}`.
+        A PDF that does not fit in the job store is reported as `failed`.
+      parameters:
+        - name: X-Pdfq-Job-Id
+          in: header
+          required: true
+          description: The job id.
+          schema: { type: string, format: uuid }
+        - name: X-Pdfq-Status
+          in: header
+          required: true
+          description: Job outcome.
+          schema: { type: string, enum: [succeeded, failed] }
+        - name: X-Pdfq-Timestamp
+          in: header
+          required: true
+          description: Unix time in seconds, covered by the signature.
+          schema: { type: string, pattern: '^[0-9]+$' }
+        - name: X-Pdfq-Signature
+          in: header
+          required: true
+          description: '`sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>`.'
+          schema: { type: string, pattern: '^sha256=[0-9a-f]{64}$' }
+      requestBody:
+        required: true
+        content:
+          application/pdf:
+            schema: { type: string, format: binary }
+          application/json:
+            schema: { $ref: '#/components/schemas/Error' }
+      responses:
+        '200':
+          description: Any 2xx marks the delivery as done.
+
+components:
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      description: Job id. Anything that is not a known UUID gives `404 not_found`.
+      schema: { type: string, format: uuid }
+
+  requestBodies:
+    CompileRequest:
+      required: true
+      content:
+        multipart/form-data:
+          schema: { $ref: '#/components/schemas/MultipartRequest' }
+          encoding:
+            file: { contentType: application/octet-stream }
+            archive: { contentType: application/zip }
+            asset: { contentType: application/octet-stream }
+            attachment: { contentType: application/octet-stream }
+            facturx: { contentType: 'text/xml, application/xml, application/octet-stream' }
+        application/json:
+          schema: { $ref: '#/components/schemas/JsonRequest' }
+
+  responses:
+    BadRequest:
+      description: '`invalid_input` (bad multipart, path, JSON, image, option combination) or `schema_violation` (`data` fails the template''s `schema.json`).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: '`not_found`: unknown template or job.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PayloadTooLarge:
+      description: '`payload_too_large`: input limits exceeded.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: |
+        The document cannot be compiled: `compile_error`, `package_not_allowed`,
+        `too_many_pages`, `output_too_large`, `timeout` (`detail`: `cpu` or
+        `wall`), `memory_limit`. Deterministic: do not retry automatically.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    QueueFull:
+      description: '`queue_full`: queue or job store full. Retry later.'
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: '`worker_crashed` (unexpected worker failure) or `internal` (PDFQ bug).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    MultipartRequest:
+      type: object
+      description: |
+        Exactly one source: `template`, `file` (repeatable) or `archive`.
+
+        Wildcard fields, which OpenAPI cannot list by name:
+        - `input.<key>`: string exposed as `sys.inputs.<key>`. `<key>` is
+          letters, digits, `_` or `-`, and not `data`.
+        - `attachment_relationship.<filename>`: PDF/A-3 `AFRelationship` of an
+          attachment (`source`, `data`, `alternative`, `supplement`,
+          `unspecified`; default `supplement`). Also applies to `data.json`
+          and `factur-x.xml`.
+
+        Unknown fields are refused (`400 invalid_input`).
+      properties:
+        template:
+          type: string
+          pattern: '^[a-z0-9_-]+$'
+          description: Name of a mounted template.
+        file:
+          type: array
+          items: { type: string, format: binary }
+          description: |
+            Source files and assets. The part's filename is its path in the
+            project (`main.typ`, `img/logo.png`). The `.pdfq/` directory is
+            reserved.
+        archive:
+          type: string
+          format: binary
+          description: A zip of the project.
+        entrypoint:
+          type: string
+          default: main.typ
+          description: Main file (not allowed with `template`).
+        data:
+          type: string
+          description: JSON document, exposed as `sys.inputs.data` (string).
+        asset:
+          type: array
+          items: { type: string, format: binary }
+          description: Template mode only. File mounted at `/assets/<filename>`; cannot shadow template files.
+        attachment:
+          type: array
+          items: { type: string, format: binary }
+          description: |
+            File embedded in the PDF as-is. The filename is its name in the
+            PDF: 1-128 letters, digits, `.`, `_`, `-`, spaces, not starting
+            with `.`. MIME type from the part's `Content-Type`, or guessed from
+            the extension. Counts toward the file limits.
+        attach_data:
+          type: boolean
+          default: false
+          description: Embed `data` as `data.json` (relationship `source`). Accepts `true`, `false`, `1`, `0`.
+        facturx:
+          type: string
+          format: binary
+          description: Factur-X CII XML. Requires `facturx_profile`. Only sanity-checked, not schema-validated.
+        facturx_profile:
+          $ref: '#/components/schemas/FacturxProfile'
+        pdf_standard:
+          type: array
+          items: { type: string, examples: [a-3b] }
+          description: Repeatable. Values accepted by Typst 0.15.1 (`a-2b`, `a-3b`, `ua-1`, ...).
+        date:
+          type: string
+          format: date
+          description: '`YYYY-MM-DD`: fixes `datetime.today()` and the PDF creation date. Default: today (UTC).'
+        strict:
+          type: boolean
+          default: false
+          description: Any Typst warning fails the job. Accepts `true`, `false`, `1`, `0`.
+        callback_url:
+          type: string
+          format: uri
+          description: '`POST /jobs` only (refused on `/compile`). See the `jobFinished` webhook.'
+      patternProperties:
+        '^input\.[A-Za-z0-9_-]+$':
+          type: string
+        '^attachment_relationship\..+$':
+          $ref: '#/components/schemas/Relationship'
+
+    JsonRequest:
+      type: object
+      description: Template mode without uploads. Unknown fields are refused (`400 invalid_input`).
+      required: [template]
+      additionalProperties: false
+      properties:
+        template:
+          type: string
+          pattern: '^[a-z0-9_-]+$'
+          description: Name of a mounted template.
+        data:
+          description: Any JSON value, serialized and exposed as `sys.inputs.data` (string).
+        input:
+          type: object
+          description: Strings exposed as `sys.inputs.<key>` (key is letters, digits, `_` or `-`, and not `data`).
+          additionalProperties: { type: string }
+        pdf_standard:
+          description: One value or a list. Values accepted by Typst 0.15.1 (`a-2b`, `a-3b`, `ua-1`, ...).
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+        date:
+          type: string
+          format: date
+          description: '`YYYY-MM-DD`. Default: today (UTC).'
+        strict:
+          type: boolean
+          default: false
+        callback_url:
+          type: string
+          format: uri
+          description: '`POST /jobs` only (refused on `/compile`).'
+        attach_data:
+          type: boolean
+          default: false
+        facturx:
+          type: string
+          description: Factur-X CII XML as a string. Requires `facturx_profile`.
+        facturx_profile:
+          $ref: '#/components/schemas/FacturxProfile'
+        attachment_relationship:
+          type: object
+          description: Keyed by attachment name (`data.json`, `factur-x.xml`).
+          additionalProperties: { $ref: '#/components/schemas/Relationship' }
+      examples:
+        - template: invoice
+          data: { number: F-2026-001 }
+          date: '2026-11-07'
+
+    FacturxProfile:
+      type: string
+      enum: [minimum, basic-wl, basic, en16931, extended]
+      description: |
+        Embeds `factur-x.xml` (relationship `data` by default), adds
+        `pdf_standard=a-3b` unless another `a-3*` is given, writes the
+        Factur-X XMP metadata.
+
+    Relationship:
+      type: string
+      enum: [source, data, alternative, supplement, unspecified]
+
+    Error:
+      type: object
+      description: Error envelope returned by every endpoint and by the failure webhook.
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/JobError' }
+
+    JobError:
+      type: object
+      required: [kind, message, detail, diagnostics]
+      properties:
+        kind: { $ref: '#/components/schemas/ErrorKind' }
+        message:
+          type: string
+        detail:
+          type: [string, 'null']
+          description: Extra classification, e.g. `cpu` or `wall` for `timeout`.
+        diagnostics:
+          type: array
+          items: { $ref: '#/components/schemas/Diagnostic' }
+
+    ErrorKind:
+      type: string
+      description: HTTP status per kind is listed in `docs/api-spec.md`.
+      enum:
+        - invalid_input
+        - schema_violation
+        - not_found
+        - payload_too_large
+        - compile_error
+        - package_not_allowed
+        - too_many_pages
+        - output_too_large
+        - timeout
+        - memory_limit
+        - queue_full
+        - worker_crashed
+        - not_finished
+        - internal
+
+    Diagnostic:
+      type: object
+      required: [severity, message, file, line, column, hints]
+      properties:
+        severity:
+          type: string
+          enum: [error, warning]
+        message:
+          type: string
+        file:
+          type: [string, 'null']
+          description: Path in the project. `null` for `schema_violation`, whose `message` starts with the JSON pointer.
+        line:
+          type: [integer, 'null']
+          minimum: 1
+        column:
+          type: [integer, 'null']
+          minimum: 1
+        hints:
+          type: array
+          items: { type: string }
+
+    JobCreated:
+      type: object
+      required: [job_id, status_url]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status_url:
+          type: string
+          examples: [/jobs/0b7e9f4e-2f43-4a8e-9a43-2a1c5f8c0d11]
+
+    JobStatus:
+      type: object
+      required: [id, status, created_at, finished_at, pages, warnings, error, webhook]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        created_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+        pages:
+          type: [integer, 'null']
+          minimum: 0
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/Diagnostic' }
+        error:
+          description: Set when `status` is `failed`.
+          oneOf:
+            - $ref: '#/components/schemas/JobError'
+            - type: 'null'
+        webhook:
+          description: '`null` without `callback_url`.'
+          oneOf:
+            - $ref: '#/components/schemas/WebhookStatus'
+            - type: 'null'
+
+    WebhookStatus:
+      type: object
+      required: [state, attempts]
+      properties:
+        state:
+          type: string
+          enum: [pending, delivered, failed]
+        attempts:
+          type: integer
+          minimum: 0
+
+    Health:
+      type: object
+      required: [status, workers, version, typst_version]
+      properties:
+        status:
+          type: string
+          enum: [ok, no_worker]
+        workers:
+          type: integer
+          minimum: 0
+          description: Worker processes alive.
+        version:
+          type: string
+          description: PDFQ version.
+        typst_version:
+          type: string
+
+    Ready:
+      type: object
+      required: [ready, workers, queued]
+      properties:
+        ready:
+          type: boolean
+        workers:
+          type: integer
+          minimum: 0
+        queued:
+          type: integer
+          minimum: 0

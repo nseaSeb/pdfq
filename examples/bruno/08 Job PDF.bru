@@ -1,0 +1,16 @@
+meta {
+  name: Job PDF
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/jobs/{{jobId}}/pdf
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.headers["content-type"]: eq application/pdf
+}

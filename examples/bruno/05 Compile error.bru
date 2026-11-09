@@ -1,0 +1,23 @@
+meta {
+  name: Compile error
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/compile
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  file: @file(files/broken.typ)
+  entrypoint: broken.typ
+}
+
+assert {
+  res.status: eq 422
+  res.headers["content-type"]: contains application/json
+  res.body.error.kind: eq compile_error
+  res.body.error.diagnostics[0].file: eq broken.typ
+}

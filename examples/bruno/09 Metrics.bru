@@ -1,0 +1,17 @@
+meta {
+  name: Metrics
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/metrics
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.headers["content-type"]: contains text/plain
+  res.body: contains pdfq_jobs_total
+}

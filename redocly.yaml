@@ -1,0 +1,8 @@
+# Lint configuration for docs/openapi.yaml (see .github/workflows/ci.yml).
+extends:
+  - recommended
+rules:
+  # The documented server is the local default of the Docker image.
+  no-server-example.com: off
+  # /health, /ready and /metrics have no client error responses.
+  operation-4xx-response: off
