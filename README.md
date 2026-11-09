@@ -264,6 +264,10 @@ Mitigation: run the hardened container shown above, without network access it do
 - `GET /ready`: `200` when a worker is ready and the queue is not full.
 - `GET /metrics`: Prometheus metrics (job outcomes and durations, workers, queue, rejections, webhooks). Not subject to admission control.
 
+## Performance
+
+On an Apple M1 laptop under background load (best of three runs), a warm PDFQ server returns a one-page invoice in about 3.4 ms (p50, sequential). At concurrency 8 it serves 835 to 1285 invoices/s across the runs. That is faster than running `pdfq-cli` once per document (11.5 ms), which pays process start and font loading every time. HTTP and isolation add at most about 1.5 ms per request. `PDFQ_JOBS_PER_WORKER=1` caps throughput at about 330 invoices/s, because each job starts a new worker. Method, all numbers and caveats: [docs/benchmark.md](docs/benchmark.md).
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, the checks and a map of the code.

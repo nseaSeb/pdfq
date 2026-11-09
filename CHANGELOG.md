@@ -4,6 +4,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- Benchmark of the cost of the HTTP layer and process isolation versus an in-process compile: `scripts/bench.sh` and results in [docs/benchmark.md](docs/benchmark.md).
+
 ## [0.1.0] - 2026-11-09
 
 First version, built against Typst 0.15.1.
